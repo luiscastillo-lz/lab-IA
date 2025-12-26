@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LabAi - Asistente Virtual</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- Header Compacto -->
+    <header class="header">
+        <div class="header-content">
+            <div class="logo-section">
+                <img src="labai.png" alt="LabAi Logo" class="robot-logo" width="80" height="80">
+                <h1 class="title">LabAi</h1>
+            </div>
+            <div class="subtitle">Asistente Virtual de Laboratorio</div>
+        </div>
+    </header>
+
+    <!-- Contenedor Principal -->
+    <div class="main-container">
+        <!-- Área de Chat -->
+        <div class="chat-container" id="chatContainer">
+            <div class="messages" id="messages">
+                <!-- Mensaje de Bienvenida -->
+                <div class="message bot-message">
+                    <div class="message-content">
+                        <p>¡Hola! Soy <strong>LabAi</strong>, tu asistente virtual de laboratorio. 🤖</p>
+                        <p>Puedo ayudarte con información sobre procedimientos, normas ASTM, equipos y mucho más.</p>
+                        <p><em>¿En qué puedo asistirte hoy?</em></p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Indicador de Escritura -->
+            <div class="typing-indicator" id="typingIndicator" style="display: none;">
+                <div class="typing-dots">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Barra de Acciones Inferior -->
+        <div class="action-bar">
+            <button class="action-btn" id="resetBtn" title="Nueva conversación">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="1 4 1 10 7 10"></polyline>
+                    <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path>
+                </svg>
+                Nueva Conversación
+            </button>
+        </div>
+
+        <!-- Área de Input -->
+        <div class="input-container">
+            <form id="chatForm">
+                <textarea 
+                    id="messageInput" 
+                    class="message-input" 
+                    placeholder="Escribe tu pregunta aquí..."
+                    rows="1"
+                ></textarea>
+                <button type="submit" class="send-btn" id="sendBtn">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="22" y1="2" x2="11" y2="13"></line>
+                        <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                    </svg>
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Footer Informativo -->
+    <footer class="footer">
+        <p>Powered by Google Gemini 2.0 Flash • ChromaDB • LangChain</p>
+    </footer>
+
+    <script src="script.js"></script>
+</body>
+</html>

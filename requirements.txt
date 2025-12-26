@@ -1,0 +1,41 @@
+# Core Langchain and LLM
+langchain==0.1.20
+langchain-google-genai==0.0.11
+google-generativeai==0.4.1
+langchain-community==0.0.38
+langchain-text-splitters==0.0.1
+langchain-core==0.1.52
+
+# Vector Store
+chromadb==0.4.24
+
+# PDF Processing - Multiple Parsers
+pdfplumber==0.11.0
+PyMuPDF==1.24.0
+tabula-py==2.9.3
+pytesseract==0.3.10
+
+# Image Processing (for OCR)
+Pillow==10.3.0
+opencv-python==4.9.0.80
+
+# Data Processing
+pandas==2.2.1
+numpy==1.26.4
+
+# Unit Conversion
+pint==0.23
+
+# Web UI
+gradio==4.26.0
+
+# PDF Generation (for export)
+reportlab==4.1.0
+
+# Additional utilities
+python-dotenv==1.0.1
+tiktoken==0.6.0
+unstructured==0.12.5
+
+# Additional PDF table extraction (replaces camelot)
+pdfminer.six==20231228
