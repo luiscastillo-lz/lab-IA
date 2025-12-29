@@ -29,6 +29,10 @@ services:
     container_name: labia_app
     ports:
       - "8010:8010"
+    dns:
+      - 8.8.8.8           # Google DNS primario
+      - 8.8.4.4           # Google DNS secundario
+      - 1.1.1.1           # Cloudflare DNS (fallback)
     environment:
       # PostgreSQL Connection
       POSTGRES_HOST: postgres
