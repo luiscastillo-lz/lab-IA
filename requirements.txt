@@ -45,6 +45,7 @@ tiktoken==0.8.0             # Conteo de tokens para Google Gemini
 httpx==0.28.1               # HTTP client (SSL bypass corporativo)
 certifi==2024.12.14         # SSL certificates
 urllib3==2.2.0              # HTTP client con soporte SSL bypass
+tabulate==0.9.0             # Formateo de tablas para pandas
 
 # --- Testing & Development (opcional) ---
 pytest==8.3.4
