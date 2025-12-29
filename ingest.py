@@ -18,6 +18,9 @@ Fecha: 27 de diciembre de 2025
 ================================================================================================
 """
 
+# Configuración gRPC ANTES de cualquier import (CRÍTICO)
+import grpc_config
+
 import os
 import re
 import glob
@@ -557,11 +560,21 @@ def ingest_pdfs(test_mode: bool = False, test_files: Optional[List[str]] = None,
     
     # Inicializar embeddings
     logger.info("🔗 Conectando a Google Gemini...")
+    
+    # Configurar cliente httpx con DNS explícito (bypass DNS interno de Docker)
+    import httpx
+    httpx_client = httpx.Client(
+        verify=False,  # Bypass SSL corporate proxy
+        timeout=120.0,  # Timeout extendido para embeddings
+        follow_redirects=True
+    )
+    
     embeddings = GoogleGenerativeAIEmbeddings(
         model="models/embedding-001",
         google_api_key=os.getenv("GOOGLE_API_KEY"),
-        transport="rest",  # Usar REST en vez de gRPC
-        client_options={"api_endpoint": "https://generativelanguage.googleapis.com"}
+        transport="rest",  # Forzar REST (no gRPC)
+        client_options={"api_endpoint": "https://generativelanguage.googleapis.com"},
+        client=httpx_client  # Cliente customizado con bypass SSL
     )
     
     # Inicializar vectorstore

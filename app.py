@@ -22,6 +22,9 @@ Fecha: 27 de diciembre de 2025
 ================================================================================================
 """
 
+# Configuración gRPC ANTES de cualquier import (CRÍTICO)
+import grpc_config
+
 import os
 import time
 import uuid
@@ -104,11 +107,19 @@ PG_CONNECTION_STRING = f"postgresql://{os.getenv('POSTGRES_USER', 'postgres')}:{
 # ================================================================================================
 
 print("🔗 Conectando a Google Gemini Embeddings...")
+# Cliente httpx customizado para bypass SSL y DNS
+httpx_client_embeddings = httpx.Client(
+    verify=False,
+    timeout=120.0,
+    follow_redirects=True
+)
+
 embeddings = GoogleGenerativeAIEmbeddings(
     model="models/embedding-001",
     google_api_key=os.getenv("GOOGLE_API_KEY"),
-    transport="rest",  # Usar REST en vez de gRPC
-    client_options={"api_endpoint": "https://generativelanguage.googleapis.com"}
+    transport="rest",  # Forzar REST (no gRPC)
+    client_options={"api_endpoint": "https://generativelanguage.googleapis.com"},
+    client=httpx_client_embeddings  # Bypass SSL y DNS issues
 )
 
 print(f"🗄️  Conectando a PostgreSQL+pgvector (colección: {COLLECTION_NAME})...")

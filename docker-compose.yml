@@ -44,6 +44,14 @@ services:
       # Google Gemini API
       GOOGLE_API_KEY: ${GOOGLE_API_KEY}
       
+      # gRPC/DNS Configuration (CRÍTICO para resolver Google APIs)
+      GRPC_DNS_RESOLVER: native
+      GRPC_VERBOSITY: DEBUG
+      GRPC_TRACE: http,dns_resolver
+      GRPC_ENABLE_FORK_SUPPORT: 1
+      # Forzar IPv4 (deshabilitar IPv6 que causa problemas DNS)
+      GRPC_PREFER_IPV4: 1
+      
       # LLM Configuration
       LLM_MODEL: ${LLM_MODEL:-gemini-2.5-flash}
       LLM_TEMPERATURE: ${LLM_TEMPERATURE:-0.8}
