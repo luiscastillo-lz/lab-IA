@@ -44,6 +44,7 @@ regex==2024.11.6            # Regex avanzado para extracción
 tiktoken==0.8.0             # Conteo de tokens para Google Gemini
 httpx==0.28.1               # HTTP client (SSL bypass corporativo)
 certifi==2024.12.14         # SSL certificates
+urllib3==2.2.0              # HTTP client con soporte SSL bypass
 
 # --- Testing & Development (opcional) ---
 pytest==8.3.4

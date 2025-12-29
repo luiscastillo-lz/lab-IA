@@ -22,6 +22,8 @@ import os
 import re
 import glob
 import logging
+import ssl
+import httpx
 from datetime import datetime
 from typing import List, Dict, Tuple, Optional
 from dotenv import load_dotenv
@@ -53,6 +55,19 @@ import database
 
 # Load environment variables
 load_dotenv()
+
+# ================================================================================================
+# BYPASS SSL PARA REDES CORPORATIVAS
+# ================================================================================================
+
+# Deshabilitar warnings de SSL
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# Cliente HTTP con SSL deshabilitado
+ssl_context = ssl.create_default_context()
+ssl_context.check_hostname = False
+ssl_context.verify_mode = ssl.CERT_NONE
 
 # ================================================================================================
 # CONFIGURACIÓN
@@ -544,7 +559,9 @@ def ingest_pdfs(test_mode: bool = False, test_files: Optional[List[str]] = None,
     logger.info("🔗 Conectando a Google Gemini...")
     embeddings = GoogleGenerativeAIEmbeddings(
         model="models/embedding-001",
-        google_api_key=os.getenv("GOOGLE_API_KEY")
+        google_api_key=os.getenv("GOOGLE_API_KEY"),
+        transport="rest",  # Usar REST en vez de gRPC
+        client_options={"api_endpoint": "https://generativelanguage.googleapis.com"}
     )
     
     # Inicializar vectorstore

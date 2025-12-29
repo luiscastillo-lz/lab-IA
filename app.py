@@ -25,6 +25,8 @@ Fecha: 27 de diciembre de 2025
 import os
 import time
 import uuid
+import ssl
+import httpx
 from datetime import datetime
 from dotenv import load_dotenv
 from flask import Flask, render_template, request, jsonify
@@ -45,6 +47,22 @@ import ingest
 # ================================================================================================
 
 load_dotenv()
+
+# ================================================================================================
+# BYPASS SSL PARA REDES CORPORATIVAS
+# ================================================================================================
+
+# Cliente HTTP con SSL deshabilitado para bypass de certificados corporativos
+ssl_context = ssl.create_default_context()
+ssl_context.check_hostname = False
+ssl_context.verify_mode = ssl.CERT_NONE
+
+httpx_client = httpx.Client(verify=False, timeout=60.0)
+
+# Deshabilitar warnings de SSL
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 app = Flask(__name__)
 CORS(app)  # Habilitar CORS para todas las rutas
 
@@ -88,7 +106,9 @@ PG_CONNECTION_STRING = f"postgresql://{os.getenv('POSTGRES_USER', 'postgres')}:{
 print("🔗 Conectando a Google Gemini Embeddings...")
 embeddings = GoogleGenerativeAIEmbeddings(
     model="models/embedding-001",
-    google_api_key=os.getenv("GOOGLE_API_KEY")
+    google_api_key=os.getenv("GOOGLE_API_KEY"),
+    transport="rest",  # Usar REST en vez de gRPC
+    client_options={"api_endpoint": "https://generativelanguage.googleapis.com"}
 )
 
 print(f"🗄️  Conectando a PostgreSQL+pgvector (colección: {COLLECTION_NAME})...")
@@ -107,7 +127,9 @@ llm = ChatGoogleGenerativeAI(
     model=LLM_CONFIG["model"],
     temperature=LLM_CONFIG["temperature"],
     max_output_tokens=LLM_CONFIG["max_output_tokens"],
-    google_api_key=os.getenv("GOOGLE_API_KEY")
+    google_api_key=os.getenv("GOOGLE_API_KEY"),
+    transport="rest",  # Usar REST en vez de gRPC
+    client_options={"api_endpoint": "https://generativelanguage.googleapis.com"}
 )
 
 # ================================================================================================
