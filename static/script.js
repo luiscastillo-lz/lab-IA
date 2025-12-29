@@ -1,6 +1,9 @@
 // ==================== CONFIGURACIÓN ====================
 
-const API_BASE_URL = 'http://127.0.0.1:8010';
+// Auto-detectar URL base (localhost o IP del servidor)
+const API_BASE_URL = window.location.origin;
+console.log('🤖 LabAi iniciado');
+console.log('API URL:', API_BASE_URL);
 
 // Estado global
 let isWaitingResponse = false;
