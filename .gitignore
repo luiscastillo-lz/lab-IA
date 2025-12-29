@@ -1,6 +1,28 @@
-# Archivo .gitignore para el proyecto RAG
+# ================================================================================================
+# .gitignore - LAB-IA
+# ================================================================================================
 
-# Python
+# ==================== ARCHIVOS SENSIBLES ====================
+.env
+*.env
+.env.local
+.env.production
+
+# ==================== DOCUMENTOS EXCLUIDOS ====================
+# PDFs de los instructivos (demasiado pesados para GitHub)
+raw/
+raw/**/*.pdf
+
+# Documento con prompts maestros
+Promt maestro.docx
+promt*.docx
+PROMT*.docx
+
+# Carpeta "no ingresar"
+no ingresar/
+no_ingresar/
+
+# ==================== PYTHON ====================
 __pycache__/
 *.py[cod]
 *$py.class
@@ -22,42 +44,60 @@ wheels/
 .installed.cfg
 *.egg
 MANIFEST
-
-# Entornos virtuales
 venv/
-ENV/
 env/
+ENV/
 .venv
 
-# Archivos de configuración sensibles
-.env
-
-# ChromaDB (base de datos vectorial)
+# ==================== BASES DE DATOS ====================
+*.db
+*.sqlite
+*.sqlite3
 chroma_db/
+postgres_data/
 
-# Logs
-logs/
+# ==================== LOGS ====================
 *.log
+ingestion_log.txt
+*.log.*
 
-# Exports
-exports/
-
-# IDEs
+# ==================== IDE ====================
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
-
-# Sistema operativo
 .DS_Store
 Thumbs.db
-desktop.ini
 
-# Jupyter Notebook
+# ==================== JUPYTER ====================
 .ipynb_checkpoints
+*.ipynb
 
-# Archivos temporales
+# ==================== TESTING ====================
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# ==================== DOCKER ====================
+# Mantener Dockerfile y docker-compose.yml
+# pero excluir volúmenes locales
+volumes/
+
+# ==================== TEMPORALES ====================
+tmp/
+temp/
 *.tmp
 *.bak
-*.swp
+*.backup
+
+# ==================== CERTIFICADOS ====================
+*.pem
+*.key
+*.crt
+*.cer
+
+# ==================== ARCHIVOS DE SISTEMA ====================
+.git/
+*.orig

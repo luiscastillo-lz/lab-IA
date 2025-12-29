@@ -1,16 +1,16 @@
 /* ==================== VARIABLES GLOBALES ==================== */
 
 :root {
-    --primary-blue: #2E5CB8;
-    --primary-blue-hover: #1e3a7a;
-    --user-bubble: #2E5CB8;
-    --bot-bubble: #f0f2f5;
+    --primary-blue: #1976D2;
+    --primary-blue-hover: #115293;
+    --user-bubble: #1976D2;
+    --bot-bubble: #E3F2FD;
     --background: #ffffff;
     --text-primary: #1a1a1a;
     --text-secondary: #666666;
-    --border-color: #e0e0e0;
-    --shadow-light: 0 2px 8px rgba(0, 0, 0, 0.08);
-    --shadow-medium: 0 4px 12px rgba(0, 0, 0, 0.12);
+    --border-color: #BBDEFB;
+    --shadow-light: 0 2px 8px rgba(25, 118, 210, 0.08);
+    --shadow-medium: 0 4px 12px rgba(25, 118, 210, 0.12);
     --transition: all 0.3s ease;
 }
 
@@ -223,6 +223,36 @@ body {
     font-weight: 500;
 }
 
+/* ==================== SOURCES ==================== */
+
+.sources {
+    margin-top: 12px;
+    padding: 8px 12px;
+    background: rgba(46, 92, 184, 0.05);
+    border-left: 3px solid var(--primary-blue);
+    border-radius: 4px;
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.sources strong {
+    display: block;
+    margin-bottom: 6px;
+    color: var(--text-primary);
+}
+
+.source-badge {
+    display: inline-block;
+    background: white;
+    border: 1px solid var(--border-color);
+    padding: 4px 10px;
+    border-radius: 12px;
+    margin-right: 6px;
+    margin-bottom: 6px;
+    font-size: 12px;
+    color: var(--text-primary);
+}
+
 /* ==================== FEEDBACK BUTTONS ==================== */
 
 .feedback-buttons {
@@ -233,33 +263,35 @@ body {
 
 .feedback-btn {
     background: transparent;
-    border: 1px solid var(--border-color);
-    padding: 6px 12px;
-    border-radius: 6px;
+    border: none;
+    padding: 8px;
+    border-radius: 50%;
     cursor: pointer;
-    font-size: 13px;
+    font-size: 18px;
     display: flex;
     align-items: center;
+    justify-content: center;
     gap: 6px;
     transition: var(--transition);
     color: var(--text-secondary);
+    width: 36px;
+    height: 36px;
 }
 
 .feedback-btn:hover {
     background: var(--bot-bubble);
-    border-color: var(--primary-blue);
     color: var(--primary-blue);
+    transform: scale(1.1);
 }
 
 .feedback-btn.selected {
     background: var(--primary-blue);
     color: white;
-    border-color: var(--primary-blue);
 }
 
 .feedback-btn svg {
-    width: 16px;
-    height: 16px;
+    width: 18px;
+    height: 18px;
 }
 
 /* ==================== TYPING INDICATOR ==================== */
@@ -548,5 +580,122 @@ body {
     }
     50% {
         opacity: 0.5;
+    }
+}
+
+/* ==================== MODAL DE FEEDBACK ==================== */
+
+.feedback-modal {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+    animation: fadeIn 0.3s ease;
+}
+
+.feedback-modal-content {
+    background: white;
+    padding: 32px;
+    border-radius: 16px;
+    max-width: 500px;
+    width: 90%;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+    animation: slideUp 0.3s ease;
+}
+
+.feedback-modal-content h3 {
+    color: var(--primary-blue);
+    margin-bottom: 12px;
+    font-size: 20px;
+}
+
+.feedback-modal-content p {
+    color: var(--text-secondary);
+    margin-bottom: 16px;
+    font-size: 14px;
+}
+
+.feedback-modal-content textarea {
+    width: 100%;
+    padding: 12px;
+    border: 2px solid var(--border-color);
+    border-radius: 8px;
+    font-family: inherit;
+    font-size: 14px;
+    resize: vertical;
+    min-height: 100px;
+    transition: var(--transition);
+}
+
+.feedback-modal-content textarea:focus {
+    outline: none;
+    border-color: var(--primary-blue);
+    box-shadow: 0 0 0 3px rgba(25, 118, 210, 0.1);
+}
+
+.feedback-modal-buttons {
+    display: flex;
+    gap: 12px;
+    margin-top: 20px;
+    justify-content: flex-end;
+}
+
+.feedback-modal-buttons button {
+    padding: 10px 20px;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: var(--transition);
+    border: none;
+}
+
+.cancel-btn {
+    background: #f5f5f5;
+    color: var(--text-primary);
+}
+
+.cancel-btn:hover {
+    background: #e0e0e0;
+}
+
+.submit-btn {
+    background: var(--primary-blue);
+    color: white;
+}
+
+.submit-btn:hover {
+    background: var(--primary-blue-hover);
+}
+
+/* Mensaje de agradecimiento */
+.thank-you-message {
+    position: fixed;
+    top: 80px;
+    right: 20px;
+    background: #4caf50;
+    color: white;
+    padding: 16px 24px;
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+    z-index: 1001;
+    animation: slideIn 0.3s ease;
+    font-weight: 500;
+}
+
+@keyframes slideUp {
+    from {
+        transform: translateY(20px);
+        opacity: 0;
+    }
+    to {
+        transform: translateY(0);
+        opacity: 1;
     }
 }

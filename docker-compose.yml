@@ -1,0 +1,88 @@
+version: '3.8'
+
+services:
+  # ==================== PostgreSQL con pgvector ====================
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: labia_postgres
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-admin171419860}
+      POSTGRES_DB: ${POSTGRES_DB:-labia_db}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d labia_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - labia_network
+
+  # ==================== Aplicación Flask (Backend + Frontend) ====================
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: labia_app
+    ports:
+      - "8010:8010"
+    environment:
+      # PostgreSQL Connection
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-labia_db}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-admin171419860}
+      
+      # Google Gemini API
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY}
+      
+      # LLM Configuration
+      LLM_MODEL: ${LLM_MODEL:-gemini-2.5-flash}
+      LLM_TEMPERATURE: ${LLM_TEMPERATURE:-0.8}
+      LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-4096}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-models/embedding-001}
+      
+      # RAG Configuration
+      CHUNK_SIZE: ${CHUNK_SIZE:-1024}
+      CHUNK_OVERLAP: ${CHUNK_OVERLAP:-150}
+      RETRIEVAL_K: ${RETRIEVAL_K:-5}
+      
+      # Application Settings
+      PORT: 8010
+      DEBUG: ${DEBUG:-False}
+      COLLECTION_NAME: ${COLLECTION_NAME:-labia_embeddings}
+      
+    volumes:
+      # Montar carpeta raw para documentos PDF (debe crearse manualmente en servidor)
+      - ./raw:/app/raw:ro
+      # Logs persistentes
+      - ./logs:/app/logs
+      
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - labia_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8010', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+# ==================== Volúmenes ====================
+volumes:
+  postgres_data:
+    driver: local
+
+# ==================== Redes ====================
+networks:
+  labia_network:
+    driver: bridge

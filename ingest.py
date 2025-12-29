@@ -1,537 +1,738 @@
 """
-Pipeline de Ingestión de PDFs para RAG de Control de Calidad
-Procesamiento robusto con múltiples parsers, chunking semántico y ChromaDB
+================================================================================================
+INGEST.PY - RAG LABIA
+Pipeline de Ingesta Avanzada para Instructivos de Laboratorio de Control de Calidad
+================================================================================================
+
+Características:
+- Extracción multi-librería (pdfplumber → PyMuPDF → pytesseract fallback)
+- Limpieza de headers/footers repetidos ("DOCUMENTO CONTROLADO")
+- Segmentación semántica por secciones (INICIO, PROCEDIMIENTO, TABLA, FIGURA)
+- Normalización dual de unidades (original + SI) con pint
+- Extracción de metadatos (código LL-CI-I-xx, normas ASTM, revisión, fecha)
+- Chunking controlado 1024 tokens / overlap 150
+- Embeddings Google Gemini + PostgreSQL+pgvector
+
+Autor: Sistema LabIa
+Fecha: 27 de diciembre de 2025
+================================================================================================
 """
 
 import os
 import re
+import glob
 import logging
-import io
-from pathlib import Path
-from typing import List, Dict, Any, Optional
 from datetime import datetime
-import json
+from typing import List, Dict, Tuple, Optional
+from dotenv import load_dotenv
 
-# PDF Parsers
+# PDF Processing Libraries
 import pdfplumber
 import fitz  # PyMuPDF
-import pytesseract
-import tabula
-from PIL import Image
-from pdfminer.high_level import extract_pages
-from pdfminer.layout import LTTextContainer, LTChar, LTFigure
+try:
+    import pytesseract
+    from PIL import Image
+    from pdf2image import convert_from_path
+    OCR_AVAILABLE = True
+except ImportError:
+    OCR_AVAILABLE = False
+    print("⚠️ OCR no disponible (pytesseract/Pillow/pdf2image). Solo se usarán extractores nativos.")
 
 # Data Processing
 import pandas as pd
-from pint import UnitRegistry
+import pint
 
-# Langchain
+# LangChain
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langchain_postgres import PGVector
 from langchain_core.documents import Document
-from langchain_community.vectorstores import Chroma
 
-# Utilities
-from dotenv import load_dotenv
+# Database
+import database
 
-# ==================== CONFIGURACIÓN ====================
+# Load environment variables
 load_dotenv()
 
-# Configurar Tesseract OCR
-pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+# ================================================================================================
+# CONFIGURACIÓN
+# ================================================================================================
 
-# Logging
+RAW_DIRECTORY = "./raw"
+COLLECTION_NAME = "labia_embeddings"
+
+# Chunking Configuration (Opción B: 1024 tokens / 150 overlap)
+CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "1024"))
+CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "150"))
+
+# PostgreSQL Connection
+PG_CONNECTION_STRING = f"postgresql://{os.getenv('POSTGRES_USER', 'postgres')}:{os.getenv('POSTGRES_PASSWORD', '')}@{os.getenv('POSTGRES_HOST', 'localhost')}:{os.getenv('POSTGRES_PORT', '5432')}/{os.getenv('POSTGRES_DB', 'labia_db')}"
+
+# Logging Configuration
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('logs/ingestion.log', encoding='utf-8'),
-        logging.StreamHandler()
-    ]
+    format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-# Crear directorio de logs si no existe
-Path("logs").mkdir(exist_ok=True)
+# Unit Registry para normalización
+ureg = pint.UnitRegistry()
 
-# Directorios
-RAW_DIR = Path("raw")
-CHROMA_DIR = os.getenv("CHROMA_PERSIST_DIR", "./chroma_db")
+# ================================================================================================
+# DICCIONARIO DE NORMALIZACIÓN DE UNIDADES
+# ================================================================================================
 
-# Unidades
-ureg = UnitRegistry()
-
-# ==================== PATRONES DE LIMPIEZA ====================
-HEADER_FOOTER_PATTERNS = [
-    r"DOCUMENTO CONTROLADO",
-    r"LAZARUS.*?LABORATORIOS",
-    r"LL-C[I]{1,2}-[I]{1,2}-\d+.*?Pág(?:ina)?\s+\d+\s+de\s+\d+",
-    r"Edición\s+\d+.*?Fecha:.*?\d{2}/\d{2}/\d{4}",
-]
-
-# Patrones de metadatos
-METADATA_PATTERNS = {
-    'codigo': r'(LL-C[I]{1,2}-[I]{1,2}-\d+)',
-    'norma_astm': r'(ASTM\s+[A-Z]\d+(?:/[A-Z]\d+)?(?:\s*-\s*\d+)?)',
-    'norma_en': r'(EN\s+\d+(?:-\d+)?)',
-    'revision': r'(?:Edición|Revisión|Rev\.?)\s+(\d+)',
-    'fecha': r'Fecha:\s*(\d{2}/\d{2}/\d{4})',
-}
-
-# Secciones semánticas
-SECTION_MARKERS = {
-    'inicio': r'^\s*(?:INICIO|OBJETIVO|PROPÓSITO|ALCANCE)\s*$',
-    'requisitos': r'^\s*(?:REQUISITOS|MATERIALES|EQUIPOS|REACTIVOS)\s*$',
-    'procedimiento': r'^\s*(?:PROCEDIMIENTO|MÉTODO|PASOS)\s*$',
-    'calculos': r'^\s*(?:CÁLCULOS|FÓRMULAS|EXPRESIÓN DE RESULTADOS)\s*$',
-    'referencias': r'^\s*(?:REFERENCIAS|NORMATIVIDAD)\s*$',
-}
-
-# ==================== NORMALIZACIÓN DE UNIDADES ====================
-UNIT_NORMALIZATION = {
-    r'(?<!\w)mm(?!\w)': 'milímetros',
-    r'(?<!\w)cm(?!\w)': 'centímetros',
-    r'(?<!\w)in(?!\w)': 'pulgadas',
-    r'(?<!\w)psi(?!\w)': 'PSI',
-    r'(?<!\w)MPa(?!\w)': 'megapascales',
-    r'(?<!\w)Pa(?!\w)': 'pascales',
-    r'°C': 'grados Celsius',
-    r'°F': 'grados Fahrenheit',
-    r'(?<!\w)kg(?!\w)': 'kilogramos',
-    r'(?<!\w)g(?!\w)': 'gramos',
-    r'(?<!\w)lb(?!\w)': 'libras',
-}
-
-
-# ==================== FUNCIONES DE EXTRACCIÓN ====================
-
-def extract_with_pdfplumber(pdf_path: Path) -> Dict[str, Any]:
-    """Extrae texto y tablas usando pdfplumber (método principal)"""
-    try:
-        text_content = []
-        tables_content = []
-        
-        with pdfplumber.open(pdf_path) as pdf:
-            for page_num, page in enumerate(pdf.pages, 1):
-                # Extraer texto
-                page_text = page.extract_text()
-                if page_text:
-                    text_content.append({
-                        'page': page_num,
-                        'text': page_text
-                    })
-                
-                # Extraer tablas
-                tables = page.extract_tables()
-                for table_idx, table in enumerate(tables):
-                    if table:
-                        df = pd.DataFrame(table[1:], columns=table[0])
-                        tables_content.append({
-                            'page': page_num,
-                            'table_num': table_idx + 1,
-                            'data': df.to_string()
-                        })
-        
-        return {
-            'success': True,
-            'text': text_content,
-            'tables': tables_content,
-            'parser': 'pdfplumber'
-        }
-    except Exception as e:
-        logger.warning(f"pdfplumber falló para {pdf_path.name}: {str(e)}")
-        return {'success': False, 'error': str(e)}
-
-
-def extract_with_pdfminer(pdf_path: Path) -> Dict[str, Any]:
-    """Extrae texto estructurado usando pdfminer.six (alternativa a camelot)"""
-    try:
-        text_content = []
-        
-        for page_num, page_layout in enumerate(extract_pages(str(pdf_path)), 1):
-            page_text = ""
-            for element in page_layout:
-                if isinstance(element, LTTextContainer):
-                    page_text += element.get_text()
-            
-            if page_text.strip():
-                text_content.append({
-                    'page': page_num,
-                    'text': page_text
-                })
-        
-        return {
-            'success': True,
-            'text': text_content,
-            'parser': 'pdfminer'
-        }
-    except Exception as e:
-        logger.warning(f"PDFMiner falló para {pdf_path.name}: {str(e)}")
-        return {'success': False, 'error': str(e)}
-
-
-def extract_with_tabula(pdf_path: Path) -> Dict[str, Any]:
-    """Extrae tablas usando tabula-py"""
-    try:
-        tables_content = []
-        
-        # Leer todas las tablas
-        tables = tabula.read_pdf(str(pdf_path), pages='all', multiple_tables=True)
-        
-        for idx, df in enumerate(tables):
-            if not df.empty:
-                tables_content.append({
-                    'table_num': idx + 1,
-                    'data': df.to_string()
-                })
-        
-        return {
-            'success': True,
-            'tables': tables_content,
-            'parser': 'tabula'
-        }
-    except Exception as e:
-        logger.warning(f"Tabula falló para {pdf_path.name}: {str(e)}")
-        return {'success': False, 'error': str(e)}
-
-
-def extract_images_and_ocr(pdf_path: Path) -> Dict[str, Any]:
-    """Extrae imágenes y aplica OCR con PyMuPDF + pytesseract"""
-    try:
-        ocr_content = []
-        
-        doc = fitz.open(pdf_path)
-        
-        # Limitar a primeras 3 páginas para OCR (optimización)
-        max_pages_ocr = min(3, len(doc))
-        
-        for page_num in range(1, max_pages_ocr + 1):
-            page = doc[page_num - 1]
-            # Extraer imágenes de la página
-            image_list = page.get_images()
-            
-            # Limitar a primeras 2 imágenes por página
-            for img_idx, img in enumerate(image_list[:2]):
-                try:
-                    xref = img[0]
-                    base_image = doc.extract_image(xref)
-                    image_bytes = base_image["image"]
-                    
-                    # Convertir a PIL Image
-                    image = Image.open(io.BytesIO(image_bytes))
-                    
-                    # Solo OCR en imágenes grandes (probablemente contienen texto)
-                    if image.width > 100 and image.height > 100:
-                        # Aplicar OCR con timeout implícito
-                        ocr_text = pytesseract.image_to_string(image, lang='spa', timeout=5)
-                        
-                        if ocr_text.strip():
-                            ocr_content.append({
-                                'page': page_num,
-                                'image_num': img_idx + 1,
-                                'text': ocr_text
-                            })
-                except Exception as e:
-                    logger.debug(f"Error OCR en imagen {img_idx} página {page_num}: {str(e)}")
-                    continue
-        
-        doc.close()
-        
-        return {
-            'success': True,
-            'ocr': ocr_content,
-            'parser': 'PyMuPDF+OCR'
-        }
-    except Exception as e:
-        logger.warning(f"OCR falló para {pdf_path.name}: {str(e)}")
-        return {'success': False, 'error': str(e)}
-
-
-# ==================== LIMPIEZA Y NORMALIZACIÓN ====================
-
-def clean_text(text: str) -> str:
-    """Limpia headers, footers y normaliza el texto"""
-    # Remover headers/footers
-    for pattern in HEADER_FOOTER_PATTERNS:
-        text = re.sub(pattern, '', text, flags=re.IGNORECASE | re.MULTILINE)
+UNIT_PATTERNS = {
+    # Temperatura
+    r'(\d+\.?\d*)\s*°C': ('degC', 'kelvin'),
+    r'(\d+\.?\d*)\s*°F': ('degF', 'degC'),
     
-    # Normalizar espacios en blanco
+    # Presión
+    r'(\d+\.?\d*)\s*psi': ('psi', 'kilopascal'),
+    r'(\d+\.?\d*)\s*MPa': ('megapascal', 'megapascal'),
+    r'(\d+\.?\d*)\s*kPa': ('kilopascal', 'kilopascal'),
+    r'(\d+\.?\d*)\s*Pa': ('pascal', 'kilopascal'),
+    
+    # Longitud
+    r'(\d+\.?\d*)\s*mm': ('millimeter', 'millimeter'),
+    r'(\d+\.?\d*)\s*cm': ('centimeter', 'millimeter'),
+    r'(\d+\.?\d*)\s*m(?!m)': ('meter', 'meter'),
+    r'(\d+\.?\d*)\s*in': ('inch', 'millimeter'),
+    r'(\d+\.?\d*)\s*"': ('inch', 'millimeter'),
+    r'(\d+\.?\d*)\s*ft': ('foot', 'meter'),
+    
+    # Masa
+    r'(\d+\.?\d*)\s*kg': ('kilogram', 'kilogram'),
+    r'(\d+\.?\d*)\s*g(?!r)': ('gram', 'kilogram'),
+    r'(\d+\.?\d*)\s*lb': ('pound', 'kilogram'),
+    
+    # Volumen
+    r'(\d+\.?\d*)\s*L': ('liter', 'liter'),
+    r'(\d+\.?\d*)\s*mL': ('milliliter', 'liter'),
+    r'(\d+\.?\d*)\s*gal': ('gallon', 'liter'),
+}
+
+# ================================================================================================
+# CLASE: PDFExtractor - Extracción Multi-Librería
+# ================================================================================================
+
+class PDFExtractor:
+    """
+    Extrae texto, tablas y metadatos de PDFs técnicos usando múltiples librerías:
+    1. pdfplumber (PRIORIDAD 1: tablas estructuradas)
+    2. PyMuPDF/fitz (PRIORIDAD 2: texto nativo)
+    3. pytesseract (FALLBACK: OCR para imágenes/diagramas)
+    """
+    
+    def __init__(self, pdf_path: str):
+        self.pdf_path = pdf_path
+        self.filename = os.path.basename(pdf_path)
+        
+    def extract_with_pdfplumber(self) -> Tuple[str, List[pd.DataFrame]]:
+        """Extrae texto y tablas con pdfplumber (mejor para tablas)."""
+        try:
+            full_text = []
+            tables = []
+            
+            with pdfplumber.open(self.pdf_path) as pdf:
+                for page_num, page in enumerate(pdf.pages, 1):
+                    # Extraer texto
+                    text = page.extract_text()
+                    if text:
+                        full_text.append(f"\n--- Página {page_num} ---\n{text}")
+                    
+                    # Extraer tablas
+                    page_tables = page.extract_tables()
+                    if page_tables:
+                        for table_idx, table in enumerate(page_tables):
+                            if table:
+                                df = pd.DataFrame(table[1:], columns=table[0] if table[0] else None)
+                                df['_page'] = page_num
+                                df['_table_idx'] = table_idx
+                                tables.append(df)
+            
+            return "\n".join(full_text), tables
+        except Exception as e:
+            logger.warning(f"pdfplumber falló en {self.filename}: {e}")
+            return "", []
+    
+    def extract_with_pymupdf(self) -> str:
+        """Extrae texto con PyMuPDF/fitz (mejor para texto nativo)."""
+        try:
+            doc = fitz.open(self.pdf_path)
+            full_text = []
+            
+            for page_num, page in enumerate(doc, 1):
+                text = page.get_text()
+                if text.strip():
+                    full_text.append(f"\n--- Página {page_num} ---\n{text}")
+            
+            doc.close()
+            return "\n".join(full_text)
+        except Exception as e:
+            logger.warning(f"PyMuPDF falló en {self.filename}: {e}")
+            return ""
+    
+    def extract_with_ocr(self) -> str:
+        """Extrae texto con OCR (fallback para PDFs escaneados/imágenes)."""
+        if not OCR_AVAILABLE:
+            logger.warning("OCR no disponible. Instala pytesseract, Pillow y pdf2image.")
+            return ""
+        
+        try:
+            logger.info(f"Aplicando OCR a {self.filename}...")
+            images = convert_from_path(self.pdf_path)
+            full_text = []
+            
+            for page_num, image in enumerate(images, 1):
+                text = pytesseract.image_to_string(image, lang='spa')
+                if text.strip():
+                    full_text.append(f"\n--- Página {page_num} (OCR) ---\n{text}")
+            
+            return "\n".join(full_text)
+        except Exception as e:
+            logger.error(f"OCR falló en {self.filename}: {e}")
+            return ""
+    
+    def extract_all(self) -> Tuple[str, List[pd.DataFrame]]:
+        """
+        Estrategia de extracción con fallback:
+        1. Intentar pdfplumber (mejor para tablas)
+        2. Si falla o texto insuficiente, intentar PyMuPDF
+        3. Si ambos fallan, intentar OCR (solo si OCR_AVAILABLE=True)
+        """
+        logger.info(f"📄 Procesando: {self.filename}")
+        
+        # Intento 1: pdfplumber
+        text, tables = self.extract_with_pdfplumber()
+        
+        # Intento 2: PyMuPDF si pdfplumber no extrajo suficiente texto
+        if len(text) < 100:
+            logger.info(f"  ↳ pdfplumber extrajo poco texto, probando PyMuPDF...")
+            pymupdf_text = self.extract_with_pymupdf()
+            if len(pymupdf_text) > len(text):
+                text = pymupdf_text
+        
+        # Intento 3: OCR solo si aún no hay texto suficiente
+        if len(text) < 100 and OCR_AVAILABLE:
+            logger.info(f"  ↳ Texto insuficiente, aplicando OCR...")
+            ocr_text = self.extract_with_ocr()
+            if len(ocr_text) > len(text):
+                text = ocr_text
+        
+        logger.info(f"  ✓ Extraído: {len(text)} caracteres, {len(tables)} tablas")
+        return text, tables
+
+# ================================================================================================
+# FUNCIONES: Limpieza y Normalización
+# ================================================================================================
+
+def clean_headers_footers(text: str) -> str:
+    """
+    Elimina headers/footers repetidos que contaminan chunks:
+    - "DOCUMENTO CONTROLADO"
+    - Logos
+    - Pies de página con números
+    """
+    patterns_to_remove = [
+        r'DOCUMENTO CONTROLADO',
+        r'LAZARUS.*?(?=\n)',
+        r'Página \d+ de \d+',
+        r'^\d+\s*$',  # Números de página solitarios
+        r'_{3,}',  # Líneas de guiones bajos
+        r'-{3,}',  # Líneas de guiones
+    ]
+    
+    for pattern in patterns_to_remove:
+        text = re.sub(pattern, '', text, flags=re.MULTILINE | re.IGNORECASE)
+    
+    # Limpiar espacios múltiples
     text = re.sub(r'\n{3,}', '\n\n', text)
-    text = re.sub(r'[ \t]+', ' ', text)
-    
-    # Normalizar unidades (mantener símbolos pero agregar contexto)
-    for pattern, replacement in UNIT_NORMALIZATION.items():
-        text = re.sub(pattern, f'{replacement}', text)
+    text = re.sub(r'  +', ' ', text)
     
     return text.strip()
 
+def normalize_units(text: str) -> Dict[str, any]:
+    """
+    Normaliza unidades encontradas en el texto (Opción B: Dual).
+    Retorna diccionario con valores originales y normalizados.
+    """
+    normalized_units = []
+    
+    for pattern, (from_unit, to_unit) in UNIT_PATTERNS.items():
+        matches = re.finditer(pattern, text, re.IGNORECASE)
+        for match in matches:
+            value_str = match.group(1)
+            original = match.group(0)
+            
+            try:
+                value = float(value_str)
+                quantity = value * ureg(from_unit)
+                converted = quantity.to(to_unit)
+                
+                normalized_units.append({
+                    'original': original,
+                    'value_original': value,
+                    'unit_original': from_unit,
+                    'value_normalized': f"{converted.magnitude:.2f}",
+                    'unit_normalized': to_unit
+                })
+            except Exception as e:
+                logger.debug(f"Error normalizando '{original}': {e}")
+    
+    return normalized_units
 
-def extract_metadata(text: str, filename: str) -> Dict[str, Any]:
-    """Extrae metadatos del documento"""
-    metadata: Dict[str, Any] = {
-        "filename": filename,
-        "codigo": None,
-        # ChromaDB NO acepta listas/dicts/None en metadata. Guardamos normas como string.
-        "normas": None,
-        "revision": None,
-        "fecha": None,
+# ================================================================================================
+# FUNCIONES: Extracción de Metadatos
+# ================================================================================================
+
+def extract_metadata(text: str, filename: str) -> Dict[str, any]:
+    """
+    Extrae metadatos específicos de instructivos de laboratorio:
+    - Código de documento (LL-CI-I-05, LL-CII-20, etc.)
+    - Normas ASTM (C109, C1090, C143, etc.)
+    - Revisión (rev01, rev02, edición)
+    - Fecha
+    - Variables técnicas (pH, Pa, Ps, G, T, V)
+    """
+    metadata = {
+        'source': filename,
+        'codigo_documento': None,
+        'normas_astm': [],
+        'revision': None,
+        'fecha': None,
+        'variables_tecnicas': [],
+        'tipo_documento': 'instructivo_laboratorio'
     }
     
-    # Extraer código del documento
-    codigo_match = re.search(METADATA_PATTERNS['codigo'], text)
+    # Código de documento: LL-CI-I-05, LLCCI05, LL-CII-20, etc.
+    codigo_match = re.search(r'(LL[-\s]?C(?:I{1,2})[-\s]?I?[-\s]?\d{2,3})', text, re.IGNORECASE)
     if codigo_match:
-        metadata['codigo'] = codigo_match.group(1)
+        metadata['codigo_documento'] = codigo_match.group(1).replace(' ', '').upper()
     
-    # Extraer normas ASTM / EN
-    normas: List[str] = []
-    normas.extend(re.findall(METADATA_PATTERNS["norma_astm"], text))
-    normas.extend(re.findall(METADATA_PATTERNS["norma_en"], text))
-    normas = [n.strip() for n in normas if n and n.strip()]
-    if normas:
-        metadata["normas"] = ", ".join(sorted(set(normas)))
+    # Normas ASTM: ASTM C109, ASTM C1090, C143, etc.
+    astm_matches = re.findall(r'ASTM\s+([A-Z]\d{2,4}(?:-\d{2})?)', text, re.IGNORECASE)
+    if astm_matches:
+        metadata['normas_astm'] = list(set(astm_matches))
     
-    # Extraer revisión
-    rev_match = re.search(METADATA_PATTERNS['revision'], text)
-    if rev_match:
-        metadata['revision'] = rev_match.group(1)
+    # Revisión: rev01, rev02, edición 01, etc.
+    revision_match = re.search(r'(?:rev|revisión|edición)\s*(\d{1,2})', text, re.IGNORECASE)
+    if revision_match:
+        metadata['revision'] = f"rev{revision_match.group(1).zfill(2)}"
     
-    # Extraer fecha
-    fecha_match = re.search(METADATA_PATTERNS['fecha'], text)
+    # Fecha: 01/12/2023, 2023-12-01, etc.
+    fecha_match = re.search(r'(?:fecha|date)[\s:]+(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})', text, re.IGNORECASE)
     if fecha_match:
         metadata['fecha'] = fecha_match.group(1)
-
-    # Normalizar a tipos simples (str/int/float/bool) y remover None
-    normalized: Dict[str, Any] = {}
-    for key, value in metadata.items():
-        if value is None:
-            continue
-        if isinstance(value, (str, int, float, bool)):
-            normalized[key] = value
-        else:
-            normalized[key] = str(value)
-
-    return normalized
-
-
-def detect_section(text: str) -> Optional[str]:
-    """Detecta el tipo de sección basado en marcadores"""
-    for section_type, pattern in SECTION_MARKERS.items():
-        if re.search(pattern, text, re.IGNORECASE | re.MULTILINE):
-            return section_type
-    return None
-
-
-# ==================== CHUNKING SEMÁNTICO ====================
-
-def semantic_chunking(content: List[Dict], metadata: Dict, chunk_size: int = 800, chunk_overlap: int = 200) -> List[Document]:
-    """Divide el contenido en chunks semánticos por sección"""
-    documents = []
     
-    # Combinar todo el texto por página
-    full_text = ""
-    for page_content in content:
-        page_num = page_content.get('page', 0)
-        text = page_content.get('text', '')
-        full_text += f"\n\n=== Página {page_num} ===\n\n{text}"
+    # Variables técnicas comunes en laboratorio
+    variables_patterns = [
+        r'\bpH\b', r'\bPa\b', r'\bPs\b', r'\bG\b', r'\bT\b', r'\bV\b',
+        r'gravedad específica', r'revenimiento', r'resistencia',
+        r'contenido de aire', r'viscosidad', r'densidad'
+    ]
+    for pattern in variables_patterns:
+        if re.search(pattern, text, re.IGNORECASE):
+            metadata['variables_tecnicas'].append(pattern.replace(r'\b', ''))
     
-    # Detectar secciones
-    lines = full_text.split('\n')
-    current_section = 'general'
-    section_texts = {'general': []}
+    return metadata
+    # Variables técnicas comunes en laboratorio
+    variables_patterns = [
+        r'\bpH\b', r'\bPa\b', r'\bPs\b', r'\bG\b', r'\bT\b', r'\bV\b',
+        r'gravedad específica', r'revenimiento', r'resistencia',
+        r'contenido de aire', r'viscosidad', r'densidad'
+    ]
+    for pattern in variables_patterns:
+        if re.search(pattern, text, re.IGNORECASE):
+            metadata['variables_tecnicas'].append(pattern.replace(r'\b', ''))
     
-    for line in lines:
-        detected_section = detect_section(line)
-        if detected_section:
-            current_section = detected_section
-            if current_section not in section_texts:
-                section_texts[current_section] = []
+    return metadata
+
+# ================================================================================================
+# FUNCIONES: Segmentación Semántica
+# ================================================================================================
+
+def segment_by_sections(text: str) -> List[Dict[str, str]]:
+    """
+    Divide el texto por secciones semánticas típicas de instructivos:
+    - INICIO, OBJETIVO, ALCANCE
+    - REQUISITOS, MATERIALES, EQUIPOS
+    - PROCEDIMIENTO (con pasos numerados)
+    - CÁLCULOS, FÓRMULAS
+    - PRECAUCIONES, SEGURIDAD
+    - REFERENCIAS
+    """
+    sections = []
+    
+    # Patrones de secciones comunes
+    section_patterns = {
+        'OBJETIVO': r'(?:OBJETIVO|PROPÓSITO)',
+        'ALCANCE': r'ALCANCE',
+        'REQUISITOS': r'(?:REQUISITOS|REQUERIMIENTOS)',
+        'MATERIALES': r'(?:MATERIALES|REACTIVOS)',
+        'EQUIPOS': r'(?:EQUIPOS|APARATOS|INSTRUMENTOS)',
+        'PROCEDIMIENTO': r'PROCEDIMIENTO',
+        'CÁLCULOS': r'(?:CÁLCULOS|FÓRMULAS|EXPRESIÓN)',
+        'RESULTADOS': r'(?:RESULTADOS|INFORME)',
+        'PRECAUCIONES': r'(?:PRECAUCIONES|SEGURIDAD|ADVERTENCIAS)',
+        'REFERENCIAS': r'(?:REFERENCIAS|NORMAS)',
+    }
+    
+    # Dividir por secciones
+    current_section = 'INICIO'
+    current_text = []
+    
+    for line in text.split('\n'):
+        matched_section = None
+        for section_name, pattern in section_patterns.items():
+            if re.search(f'^\\s*{pattern}', line, re.IGNORECASE):
+                # Guardar sección anterior
+                if current_text:
+                    sections.append({
+                        'seccion': current_section,
+                        'contenido': '\n'.join(current_text)
+                    })
+                current_section = section_name
+                current_text = [line]
+                matched_section = True
+                break
         
-        section_texts[current_section].append(line)
+        if not matched_section:
+            current_text.append(line)
     
-    # Crear chunks por sección
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=chunk_size,
-        chunk_overlap=chunk_overlap,
-        separators=["\n\n", "\n", ". ", " ", ""]
-    )
+    # Guardar última sección
+    if current_text:
+        sections.append({
+            'seccion': current_section,
+            'contenido': '\n'.join(current_text)
+        })
     
-    for section_type, section_lines in section_texts.items():
-        section_text = '\n'.join(section_lines)
-        
-        if section_text.strip():
-            chunks = text_splitter.split_text(section_text)
+    return sections
+
+# ================================================================================================
+# FUNCIONES: Procesamiento de Tablas
+# ================================================================================================
+
+def process_tables(tables: List[pd.DataFrame]) -> List[Dict[str, any]]:
+    """
+    Convierte tablas a formato textual estructurado.
+    Las tablas se guardan como chunks únicos (no se dividen).
+    """
+    processed_tables = []
+    
+    for idx, df in enumerate(tables):
+        try:
+            # Validar que la tabla tenga datos
+            if df.empty:
+                logger.warning(f"      ⚠️  Tabla {idx} vacía - SKIP")
+                continue
             
-            for idx, chunk in enumerate(chunks):
-                doc_metadata = metadata.copy()
-                doc_metadata.update({
-                    'section_type': section_type,
-                    'chunk_index': idx,
-                    'total_chunks': len(chunks)
-                })
-                
-                documents.append(Document(
-                    page_content=chunk,
-                    metadata=doc_metadata
-                ))
+            # Convertir tabla a texto markdown
+            table_text = df.to_markdown(index=False)
+            
+            # Validar que el texto generado tenga contenido
+            if not table_text or not table_text.strip():
+                logger.warning(f"      ⚠️  Tabla {idx} sin contenido de texto - SKIP")
+                continue
+            
+            # Extraer metadatos de la tabla de forma segura
+            page_num = None
+            if '_page' in df.columns:
+                try:
+                    # Usar iloc para acceso seguro al primer elemento
+                    page_series = df['_page']
+                    if len(page_series) > 0:
+                        page_num = page_series.iloc[0]
+                except Exception:
+                    pass  # Si falla, page_num queda como None
+            
+            processed_tables.append({
+                'contenido': table_text,
+                'tipo_contenido': 'tabla',
+                'tabla_idx': idx,
+                'page': page_num,
+                'columnas': list(df.columns),
+                'filas': len(df)
+            })
+            
+        except Exception as e:
+            logger.warning(f"      ⚠️  Error procesando tabla {idx}: {e} - SKIP")
+            continue
     
-    return documents
+    return processed_tables
 
+# ================================================================================================
+# FUNCIÓN PRINCIPAL: Ingestar PDFs
+# ================================================================================================
 
-# ==================== PROCESAMIENTO PRINCIPAL ====================
-
-def process_single_pdf(pdf_path: Path) -> List[Document]:
-    """Procesa un solo PDF con múltiples parsers y fallbacks"""
-    logger.info(f"Procesando: {pdf_path.name}")
+def reset_vectorstore():
+    """
+    Borra toda la colección de embeddings para empezar de cero.
     
+    ADVERTENCIA: Esto eliminará todos los documentos vectorizados.
+    """
+    logger.warning("⚠️  LIMPIANDO COLECCIÓN DE EMBEDDINGS...")
     try:
-        # 1. Extraer con pdfplumber (principal)
-        result_plumber = extract_with_pdfplumber(pdf_path)
+        conn = database.get_pg_connection()
+        cursor = conn.cursor()
         
-        if not result_plumber['success']:
-            # Fallback a pdfminer si pdfplumber falla
-            logger.warning(f"pdfplumber falló, intentando con pdfminer...")
-            result_pdfminer = extract_with_pdfminer(pdf_path)
-            if not result_pdfminer['success']:
-                logger.error(f"Fallo crítico en {pdf_path.name}: no se pudo extraer texto base")
-                return []
-            result_plumber = result_pdfminer
+        # Eliminar todos los embeddings de la colección
+        cursor.execute(
+            """DELETE FROM langchain_pg_embedding 
+               WHERE collection_id = (
+                   SELECT uuid FROM langchain_pg_collection WHERE name = %s
+               )""",
+            (COLLECTION_NAME,)
+        )
+        deleted_count = cursor.rowcount
         
-        # 2. Extraer tablas con Tabula
-        result_tabula = extract_with_tabula(pdf_path)
+        conn.commit()
+        cursor.close()
+        conn.close()
         
-        # 3. OCR de imágenes
-        result_ocr = extract_images_and_ocr(pdf_path)
-        
-        # Combinar todo el contenido
-        all_text_content = result_plumber['text'].copy()
-        
-        # Agregar tablas de Tabula
-        if result_tabula['success'] and result_tabula['tables']:
-            for table in result_tabula['tables']:
-                all_text_content.append({
-                    'page': 0,
-                    'text': f"\n[TABLA]\n{table['data']}\n"
-                })
-        
-        # Agregar OCR
-        if result_ocr['success']:
-            for ocr_item in result_ocr['ocr']:
-                all_text_content.append({
-                    'page': ocr_item['page'],
-                    'text': f"\n[OCR - Imagen]\n{ocr_item['text']}\n"
-                })
-        
-        # Combinar y limpiar texto
-        combined_text = "\n".join([item['text'] for item in all_text_content])
-        cleaned_text = clean_text(combined_text)
-        
-        # Extraer metadatos
-        metadata = extract_metadata(cleaned_text, pdf_path.name)
-        
-        # Crear chunks semánticos
-        documents = semantic_chunking(all_text_content, metadata)
-        
-        logger.info(f"✓ {pdf_path.name}: {len(documents)} chunks generados")
-        return documents
-        
+        logger.info(f"✅ Eliminados {deleted_count} documentos de la colección '{COLLECTION_NAME}'")
+        logger.info("🔄 La colección está lista para una ingesta limpia")
     except Exception as e:
-        logger.error(f"✗ Error procesando {pdf_path.name}: {str(e)}", exc_info=True)
-        
-        # Guardar error detallado
-        error_log = {
-            'filename': pdf_path.name,
-            'error': str(e),
-            'timestamp': datetime.now().isoformat()
-        }
-        
-        with open('logs/failed_pdfs.json', 'a', encoding='utf-8') as f:
-            f.write(json.dumps(error_log, ensure_ascii=False) + '\n')
-        
-        return []
+        logger.error(f"❌ Error limpiando colección: {e}")
 
 
-def process_all_pdfs() -> List[Document]:
-    """Procesa todos los PDFs en el directorio raw/"""
-    all_documents = []
+def ingest_pdfs(test_mode: bool = False, test_files: Optional[List[str]] = None, reset: bool = False):
+    """
+    Pipeline completo de ingesta:
+    1. Extraer texto y tablas (multi-librería)
+    2. Limpiar headers/footers
+    3. Segmentar por secciones
+    4. Extraer metadatos
+    5. Normalizar unidades (dual)
+    6. Chunking controlado (1024/150)
+    7. Generar embeddings
+    8. Almacenar en PostgreSQL+pgvector
     
-    pdf_files = list(RAW_DIR.glob("*.pdf"))
-    total_files = len(pdf_files)
-    
-    logger.info(f"Encontrados {total_files} archivos PDF en {RAW_DIR}")
-    
-    for idx, pdf_path in enumerate(pdf_files, 1):
-        logger.info(f"[{idx}/{total_files}] Procesando {pdf_path.name}")
-        
-        docs = process_single_pdf(pdf_path)
-        all_documents.extend(docs)
-    
-    logger.info(f"\nResumen: {len(all_documents)} chunks totales de {total_files} PDFs")
-    return all_documents
-
-
-# ==================== EMBEDDINGS Y VECTORSTORE ====================
-
-def create_vectorstore(documents: List[Document]):
-    """Crea embeddings y almacena en ChromaDB"""
-    logger.info("Generando embeddings con Google Gemini...")
-    
-    # Verificar API key
-    api_key = os.getenv("GOOGLE_API_KEY")
-    if not api_key or api_key == "your_google_api_key_here":
-        raise ValueError("GOOGLE_API_KEY no configurada en .env")
-    
-    # Crear embeddings
-    embeddings = GoogleGenerativeAIEmbeddings(
-        model="models/embedding-001",
-        google_api_key=api_key
-    )
-    
-    # Crear ChromaDB
-    logger.info(f"Almacenando en ChromaDB: {CHROMA_DIR}")
-    
-    vectorstore = Chroma.from_documents(
-        documents=documents,
-        embedding=embeddings,
-        persist_directory=CHROMA_DIR,
-        collection_name="laboratorio_qa"
-    )
-    
-    logger.info(f"✓ Vectorstore creado con {len(documents)} documentos")
-    return vectorstore
-
-
-# ==================== MAIN ====================
-
-def main():
-    """Función principal de ingestión"""
+    Args:
+        test_mode: Si True, procesa solo archivos de test
+        test_files: Lista de patrones de archivos para modo test
+        reset: Si True, borra toda la colección antes de ingestar
+    """
     logger.info("=" * 80)
-    logger.info("INICIANDO PIPELINE DE INGESTIÓN - RAG Control de Calidad")
+    logger.info("🚀 INICIANDO INGESTA - RAG LABIA")
     logger.info("=" * 80)
     
-    start_time = datetime.now()
+    # Inicializar base de datos
+    database.init_db()
     
-    # 1. Procesar PDFs
-    documents = process_all_pdfs()
+    # Limpiar colección si se solicita
+    if reset:
+        reset_vectorstore()
     
-    if not documents:
-        logger.error("No se generaron documentos. Revisa los logs de errores.")
+    # Obtener lista de PDFs
+    pdf_files = []
+    if test_mode and test_files:
+        for pattern in test_files:
+            pdf_files.extend(glob.glob(os.path.join(RAW_DIRECTORY, pattern)))
+    else:
+        pdf_files = glob.glob(os.path.join(RAW_DIRECTORY, "*.pdf"))
+    
+    if not pdf_files:
+        logger.error(f"❌ No se encontraron PDFs en {RAW_DIRECTORY}")
         return
     
-    # 2. Crear vectorstore
-    vectorstore = create_vectorstore(documents)
+    logger.info(f"📁 Encontrados: {len(pdf_files)} archivos PDF")
+    if test_mode:
+        logger.info(f"🧪 MODO PRUEBA: Procesando {len(pdf_files)} archivos")
     
-    # 3. Resumen final
-    end_time = datetime.now()
-    duration = (end_time - start_time).total_seconds()
+    # Inicializar embeddings
+    logger.info("🔗 Conectando a Google Gemini...")
+    embeddings = GoogleGenerativeAIEmbeddings(
+        model="models/embedding-001",
+        google_api_key=os.getenv("GOOGLE_API_KEY")
+    )
     
+    # Inicializar vectorstore
+    vectorstore = PGVector(
+        connection=PG_CONNECTION_STRING,
+        collection_name=COLLECTION_NAME,
+        embeddings=embeddings
+    )
+    
+    # Procesar cada PDF
+    total_chunks = 0
+    total_tables = 0
+    
+    for pdf_idx, pdf_path in enumerate(pdf_files, 1):
+        logger.info(f"\n{'=' * 80}")
+        logger.info(f"📄 [{pdf_idx}/{len(pdf_files)}] {os.path.basename(pdf_path)}")
+        logger.info(f"{'=' * 80}")
+        
+        try:
+            # 1. Extracción
+            extractor = PDFExtractor(pdf_path)
+            text, tables = extractor.extract_all()
+            
+            if len(text) < 50:
+                logger.warning(f"  ⚠️ Texto insuficiente extraído, saltando...")
+                continue
+            
+            # 2. Limpieza
+            text = clean_headers_footers(text)
+            
+            # 3. Extracción de metadatos
+            metadata = extract_metadata(text, os.path.basename(pdf_path))
+            logger.info(f"  📋 Metadatos: {metadata['codigo_documento']} | ASTM: {metadata['normas_astm']}")
+            
+            # 4. Normalización de unidades (dual)
+            normalized_units = normalize_units(text)
+            if normalized_units:
+                logger.info(f"  🔢 Unidades normalizadas: {len(normalized_units)}")
+                metadata['unidades_normalizadas'] = normalized_units
+            
+            # 5. Segmentación por secciones
+            sections = segment_by_sections(text)
+            logger.info(f"  📑 Secciones detectadas: {[s['seccion'] for s in sections]}")
+            
+            # 6. Chunking controlado
+            text_splitter = RecursiveCharacterTextSplitter(
+                chunk_size=CHUNK_SIZE,
+                chunk_overlap=CHUNK_OVERLAP,
+                length_function=len,
+                separators=["\n\n", "\n", ". ", " ", ""],
+                keep_separator=True
+            )
+            
+            documents = []
+            
+            # Procesar secciones como chunks
+            logger.info(f"  🔹 Iniciando chunking de {len(sections)} secciones...")
+            for section_idx, section in enumerate(sections):
+                # Validar que la sección tenga contenido
+                if not section or 'contenido' not in section:
+                    logger.warning(f"     ⚠️  Sección {section_idx} sin estructura válida - SKIP")
+                    continue
+                
+                contenido = section.get('contenido', '').strip()
+                seccion_nombre = section.get('seccion', 'DESCONOCIDA')
+                
+                if not contenido:
+                    logger.warning(f"     ⚠️  Sección '{seccion_nombre}' vacía - SKIP")
+                    continue
+                
+                logger.info(f"     📄 Sección '{seccion_nombre}': {len(contenido)} caracteres")
+                
+                try:
+                    section_chunks = text_splitter.split_text(contenido)
+                except Exception as chunk_error:
+                    logger.error(f"     ❌ Error en split_text para '{seccion_nombre}': {chunk_error}")
+                    continue
+                
+                # Validar que se generaron chunks
+                if not section_chunks:
+                    logger.warning(f"        ⚠️  No se generaron chunks para '{seccion_nombre}'")
+                    continue
+                
+                logger.info(f"        ✓ Generados {len(section_chunks)} chunks")
+                    
+                for chunk_idx, chunk in enumerate(section_chunks):
+                    # Validar que el chunk tenga contenido
+                    if not chunk or not chunk.strip():
+                        logger.warning(f"           ⚠️  Chunk {chunk_idx} vacío - SKIP")
+                        continue
+                        
+                    doc_metadata = {
+                        **metadata,
+                        'seccion': seccion_nombre,
+                        'chunk_idx': chunk_idx,
+                        'tipo_contenido': 'texto'
+                    }
+                    # Limpiar metadatos complejos para pgvector
+                    doc_metadata = {k: v for k, v in doc_metadata.items() 
+                                  if isinstance(v, (str, int, float, bool)) or v is None}
+                    
+                    documents.append(Document(
+                        page_content=chunk,
+                        metadata=doc_metadata
+                    ))
+            
+            # 7. Procesar tablas (como chunks únicos)
+            logger.info(f"  🔹 Procesando {len(tables)} tablas...")
+            try:
+                processed_tables = process_tables(tables)
+                for table_data in processed_tables:
+                    if not table_data or 'contenido' not in table_data:
+                        logger.warning(f"     ⚠️  Tabla sin contenido - SKIP")
+                        continue
+                    
+                    table_metadata = {
+                        **metadata,
+                        'tipo_contenido': 'tabla',
+                        'tabla_idx': table_data['tabla_idx'],
+                        'page': table_data.get('page')
+                    }
+                    table_metadata = {k: v for k, v in table_metadata.items() 
+                                    if isinstance(v, (str, int, float, bool)) or v is None}
+                    
+                    documents.append(Document(
+                        page_content=table_data['contenido'],
+                        metadata=table_metadata
+                    ))
+                
+                total_tables += len(processed_tables)
+                logger.info(f"     ✓ {len(processed_tables)} tablas procesadas")
+                
+            except Exception as table_error:
+                logger.error(f"  ❌ Error procesando tablas: {table_error}")
+                import traceback
+                logger.error(traceback.format_exc())
+            
+            # 8. Generar embeddings y almacenar
+            if documents:
+                logger.info(f"  💾 Generando embeddings para {len(documents)} chunks...")
+                vectorstore.add_documents(documents)
+                total_chunks += len(documents)
+                logger.info(f"  ✅ Almacenados {len(documents)} chunks ({len(processed_tables)} tablas)")
+            
+        except Exception as e:
+            import traceback
+            logger.error(f"  ❌ Error procesando {os.path.basename(pdf_path)}: {e}")
+            logger.error(f"  📍 Traceback completo:")
+            logger.error(traceback.format_exc())
+            continue
+    
+    # Resumen final
+    logger.info("\n" + "=" * 80)
+    logger.info("✅ INGESTA COMPLETADA")
     logger.info("=" * 80)
-    logger.info("INGESTIÓN COMPLETADA")
-    logger.info(f"Tiempo total: {duration:.2f} segundos")
-    logger.info(f"Documentos procesados: {len(documents)}")
-    logger.info(f"ChromaDB ubicación: {CHROMA_DIR}")
+    logger.info(f"📊 Total PDFs procesados: {len(pdf_files)}")
+    logger.info(f"📝 Total chunks creados: {total_chunks}")
+    logger.info(f"📋 Total tablas procesadas: {total_tables}")
+    logger.info(f"🗄️ Colección: {COLLECTION_NAME}")
+    logger.info(f"🔗 PostgreSQL: {os.getenv('POSTGRES_HOST', 'localhost')}:{os.getenv('POSTGRES_PORT', '5432')}/{os.getenv('POSTGRES_DB', 'labia_db')}")
     logger.info("=" * 80)
 
+# ================================================================================================
+# MAIN
+# ================================================================================================
 
 if __name__ == "__main__":
-    import io  # Necesario para OCR
-    main()
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Ingesta de PDFs para RAG LabIa")
+    parser.add_argument("--test", action="store_true", help="Modo prueba (procesar solo archivos de test)")
+    parser.add_argument("--files", type=str, help="Patrones de archivos para modo prueba (separados por coma)")
+    parser.add_argument("--reset", action="store_true", help="Borrar toda la colección antes de ingestar (ingesta limpia)")
+    
+    args = parser.parse_args()
+    
+    test_files = None
+    if args.files:
+        test_files = [f.strip() for f in args.files.split(',')]
+    
+    # Advertencia si se usa --reset
+    if args.reset:
+        print("\n" + "="*80)
+        print("⚠️  ADVERTENCIA: Se borrarán TODOS los documentos vectorizados")
+        print("="*80)
+        response = input("¿Estás seguro de continuar? (escriba 'SI' para confirmar): ")
+        if response.strip().upper() != 'SI':
+            print("❌ Operación cancelada")
+            exit(0)
+    
+    ingest_pdfs(test_mode=args.test, test_files=test_files, reset=args.reset)

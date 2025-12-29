@@ -1,459 +1,317 @@
-# 🤖 RAG - Asistente Virtual de Laboratorio de Control de Calidad
-
-Sistema RAG (Retrieval-Augmented Generation) completo con Langchain y Google Gemini 2.5 Flash para consultar instructivos y procedimientos de laboratorio.
-
-## 📋 Características
-
-### 🔍 Pipeline de Ingestión Robusto
-- **Múltiples Parsers de PDF**: pdfplumber, PDFMiner, Tabula, PyMuPDF + pytesseract OCR
-- **Extracción Inteligente**: Texto, tablas complejas, imágenes con OCR
-- **Limpieza Automática**: Remoción de headers/footers repetidos
-- **Normalización de Unidades**: °C, psi, MPa, mm, etc.
-- **Extracción de Metadatos**: Códigos LL-CI-I-##, normas ASTM/EN, revisiones
-- **Chunking Semántico**: División por secciones (Inicio, Requisitos, Procedimiento, etc.)
-- **Logging de Errores**: Continúa procesando si un PDF falla
-- **Compatible con Python 3.11.9**
-
-### 💬 Chatbot Interactivo
-- **UI Moderna con Gradio**: Paleta azul profesional (#2563eb)
-- **Parámetros LLM Configurables**: Temperatura, tokens, modelo seleccionable
-- **Memoria Conversacional**: Mantiene contexto de últimas 5 interacciones
-- **Prompt Especializado**: Chain of Thought + restricciones de fuentes
-- **Visualización de Fuentes**: Muestra documentos y normas consultadas
-- **Botón Copiar Respuesta**: Integrado en cada mensaje del bot
-- **Sistema de Feedback**: Botones 👍/👎 para evaluar respuestas
-- **Exportar a PDF**: Descarga conversación completa
-
-### 🎯 Características del Prompt
-```
-✓ Chain of Thought (análisis paso a paso)
-✓ Restricción estricta a información del contexto
-✓ Respuesta estructurada en 3 párrafos:
-  1. Respuesta directa
-  2. Detalles técnicos
-  3. Recomendación práctica
-✓ Estilo profesional en español formal
-✓ Referencias técnicas (ASTM, códigos de procedimiento)
-```
-
-## 🛠️ Requisitos del Sistema
-
-### Software Requerido
-
-1. **Python 3.9+**
-   - Descargar: https://www.python.org/downloads/
-
-2. **Tesseract OCR** (para pytesseract)
-   - **Windows**: Descargar instalador desde https://github.com/UB-Mannheim/tesseract/wiki
-   - Instalar en: `C:\Program Files\Tesseract-OCR` (ubicación por defecto configurada)
-   - **Linux**: `sudo apt-get install tesseract-ocr`
-   - **Mac**: `brew install tesseract`
-
-3. **Java Runtime Environment (JRE)** (para tabula-py)
-   - Descargar: https://www.java.com/download/
-   - Verificar instalación: `java -version`
-
-**Nota**: Python 3.11.9 es la versión recomendada y probada.
-
-## 📦 Instalación
-
-### 1. Clonar o Descargar el Proyecto
-
-```bash
-cd "c:\Users\luis.castillo\OneDrive - Lazarus & Lazarus\IA\Rag Control de Calidad"
-```
-
-### 2. Crear Entorno Virtual (Recomendado)
-
-```powershell
-# Crear entorno virtual
-python -m venv venv
-
-# Activar entorno virtual
-.\venv\Scripts\Activate.ps1
-
-# Si hay error de permisos, ejecutar primero:
-Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
-```
-
-### 3. Instalar Dependencias
-
-```powershell
-pip install -r requirements.txt
-```
-
-### 4. Configurar Variables de Entorno
-
-1. Copiar el archivo de ejemplo:
-   ```powershell
-   Copy-Item .env.example .env
-   ```
-
-2. Editar `.env` y configurar tu API key de Google:
-   ```
-   GOOGLE_API_KEY=tu_api_key_aqui
-   ```
-
-   **Obtener API Key:**
-   - Ir a: https://ai.google.dev/
-   - Crear proyecto en Google AI Studio
-   - Generar API key
-   - **Importante**: Esta API key es diferente a Google Cloud API keys
-
-### 5. Preparar PDFs
-
-Asegúrate de que tus PDFs estén en la carpeta `raw/`:
-
-```
-raw/
-├── LLCCI01 ...pdf
-├── LLCCI02 ...pdf
-└── ... (41 PDFs total)
-```
-
-## 🚀 Uso
-
-### Paso 1: Procesar PDFs (Ingestión)
-
-Ejecutar el pipeline de ingestión para procesar los 41 PDFs:
-
-```powershell
-python ingest.py
-```
-
-**Qué hace este script:**
-- Extrae texto, tablas e imágenes de cada PDF
-- Aplica OCR a imágenes cuando es necesario
-- Limpia y normaliza el contenido
-- Extrae metadatos (códigos, normas, revisiones)
-- Crea chunks semánticos por sección
-- Genera embeddings con Google Gemini
-- Almacena en ChromaDB (`./chroma_db/`)
-
-**Tiempo estimado**: 5-10 minutos para 41 PDFs
-
-**Logs generados:**
-- `logs/ingestion.log` - Log completo del proceso
-- `logs/failed_pdfs.json` - PDFs que fallaron (si alguno)
-
-### Paso 2: Iniciar Chatbot
-
-```powershell
-python app.py
-```
-
-**Interfaz web se abrirá en:**
-```
-http://127.0.0.1:7860
-```
-
-## 📖 Guía de Uso del Chatbot
-
-### Panel de Configuración (Izquierda)
-
-1. **⚙️ Configuración del Modelo**
-   - **Temperatura** (0-1): Controla creatividad
-     - 0.0 = Respuestas precisas y deterministas
-     - 0.3 = Equilibrio (recomendado)
-     - 1.0 = Más creativo (no recomendado para datos técnicos)
-   - **Max Tokens**: Longitud máxima de respuesta (1024 recomendado)
-   - **Modelo**: Seleccionar entre:
-     - `gemini-2.0-flash-exp` (más rápido, recomendado)
-     - `gemini-1.5-flash` (alternativa)
-     - `gemini-1.5-pro` (más potente pero lento)
-
-2. **📊 Acciones**
-   - **Exportar Chat a PDF**: Descarga conversación completa
-   - **Reiniciar Conversación**: Limpia historial y memoria
-
-### Panel de Chat (Derecha)
-
-1. **Hacer Preguntas**
-   - Escribir pregunta en el campo de texto
-   - Presionar Enter o click en "✈️ Enviar"
-
-2. **Respuestas del Bot**
-   - Incluyen 3 párrafos estructurados
-   - Botón copiar integrado en cada mensaje
-   - Sección "📚 Fuentes consultadas" al final
-
-3. **Feedback**
-   - 👍 Útil: Marca respuesta como útil
-   - 👎 No útil: Marca respuesta como no útil
-   - Feedback se guarda en `logs/feedback.json`
-
-### Ejemplos de Preguntas
-
-```
-✓ ¿Cuál es el procedimiento para medir el pH del cemento?
-✓ ¿Qué norma ASTM se usa para resistencia a compresión del concreto?
-✓ ¿Cómo se prepara una muestra de mortero según ASTM C305?
-✓ ¿Cuál es el equipo necesario para el ensayo de fluidez?
-✓ ¿Qué temperatura debe tener el agua para la prueba de fraguado?
-✓ Explica el procedimiento de tamizado de agregados
-```
-
-## 📁 Estructura del Proyecto
-
-```
-Rag Control de Calidad/
-│
-├── raw/                          # PDFs originales (41 archivos)
-│   ├── LLCCI01 ...pdf
-│   └── ...
-│
-├── chroma_db/                    # Base de datos vectorial (generada)
-│   └── [archivos de ChromaDB]
-│
-├── logs/                         # Logs del sistema
-│   ├── ingestion.log            # Log de procesamiento de PDFs
-│   ├── failed_pdfs.json         # PDFs que fallaron
-│   └── feedback.json            # Feedback de usuarios
-│
-├── exports/                      # PDFs exportados de conversaciones
-│   └── chat_export_*.pdf
-│
-├── ingest.py                    # Pipeline de ingestión
-├── app.py                       # Chatbot con UI
-├── requirements.txt             # Dependencias Python
-├── .env.example                 # Template de configuración
-├── .env                         # Configuración (crear manualmente)
-└── README.md                    # Esta documentación
-```
-
-## 🔧 Arquitectura del Sistema
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    PIPELINE DE INGESTIÓN                        │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-    ┌─────────────────────────┴─────────────────────────┐
-    │                                                     │
-┌───▼────┐  ┌──────────┐  ┌─────────┐  ┌──────────┐  ┌─────┐
-│  PDF   │→ │PDFPlumber│→ │PDFMiner │→ │  Tabula  │→ │ OCR │
-│  41    │  │  (texto) │  │(fallback│  │ (tablas) │  │(img)│
-└────────┘  └──────────┘  └─────────┘  └──────────┘  └─────┘
-                              │
-                    ┌─────────▼──────────┐
-                    │   LIMPIEZA Y       │
-                    │   NORMALIZACIÓN    │
-                    │ - Headers/Footers  │
-                    │ - Unidades         │
-                    │ - Metadatos        │
-                    └─────────┬──────────┘
-                              │
-                    ┌─────────▼──────────┐
-                    │  CHUNKING          │
-                    │  SEMÁNTICO         │
-                    │ - Por secciones    │
-                    │ - 512-1024 tokens  │
-                    └─────────┬──────────┘
-                              │
-                    ┌─────────▼──────────┐
-                    │  EMBEDDINGS        │
-                    │  Google Gemini     │
-                    │  embedding-001     │
-                    └─────────┬──────────┘
-                              │
-                    ┌─────────▼──────────┐
-                    │    CHROMADB        │
-                    │  Vector Store      │
-                    └────────────────────┘
-
-┌─────────────────────────────────────────────────────────────────┐
-│                      CHATBOT (RETRIEVAL)                        │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-            ┌─────────────────┴─────────────────┐
-            │                                   │
-    ┌───────▼────────┐              ┌──────────▼─────────┐
-    │   PREGUNTA     │              │  MEMORIA (k=5)     │
-    │   USUARIO      │              │  Últimas 5         │
-    └───────┬────────┘              │  interacciones     │
-            │                        └────────────────────┘
-            │                                   │
-    ┌───────▼───────────────────────────────────▼────────┐
-    │           RETRIEVAL (ChromaDB)                     │
-    │           Top-K=5 documentos similares             │
-    └───────┬────────────────────────────────────────────┘
-            │
-    ┌───────▼────────┐
-    │  CONTEXTO +    │
-    │  PROMPT CoT    │
-    └───────┬────────┘
-            │
-    ┌───────▼────────┐
-    │  GEMINI 2.5    │
-    │  FLASH         │
-    └───────┬────────┘
-            │
-    ┌───────▼────────┐
-    │  RESPUESTA     │
-    │  3 párrafos +  │
-    │  Fuentes       │
-    └────────────────┘
-```
-
-## 🐛 Troubleshooting
-
-### Error: "GOOGLE_API_KEY no configurada"
-
-**Solución:**
-1. Crear archivo `.env` desde `.env.example`
-2. Agregar tu API key de Google AI Studio
-3. Reiniciar la aplicación
-
-### Error: "Tesseract not found"
-
-**Solución:**
-1. Instalar Tesseract desde https://github.com/UB-Mannheim/tesseract/wiki
-2. Verificar que esté en `C:\Program Files\Tesseract-OCR`
-3. Si está en otra ubicación, editar `ingest.py` línea 36:
-   ```python
-   pytesseract.pytesseract.tesseract_cmd = r'C:\ruta\a\tu\tesseract.exe'
-   ```
-
-### Error: "Java not found" (tabula-py)
-
-**Solución:**
-1. Instalar Java JRE desde https://www.java.com/download/
-2. Verificar instalación: `java -version`
-3. Reiniciar terminal
-
-### Error: "No se encontró la base de datos ChromaDB"
-
-**Solución:**
-1. Ejecutar primero: `python ingest.py`
-2. Esperar a que termine el procesamiento
-3. Verificar que exista la carpeta `chroma_db/`
-4. Luego ejecutar: `python app.py`
-
-### PDFs no se procesan correctamente
-
-**Solución:**
-1. Revisar `logs/ingestion.log` para detalles
-2. Revisar `logs/failed_pdfs.json` para PDFs específicos que fallaron
-3. Verificar que los PDFs no estén corruptos o protegidos con contraseña
-4. Asegurarse de que Tesseract, Java y Ghostscript estén instalados
-
-### Respuestas del chatbot son genéricas o incorrectas
-
-**Posibles causas:**
-1. **Temperatura muy alta**: Reducir a 0.2-0.3
-2. **Ingestión incompleta**: Re-ejecutar `ingest.py`
-3. **Pregunta muy vaga**: Ser más específico (mencionar norma, procedimiento, equipo)
-4. **Información no existe**: El bot responderá "No tengo información" correctamente
-
-## 📊 Logs y Monitoreo
-
-### Archivos de Log
-
-1. **logs/ingestion.log**
-   - Proceso completo de ingestión
-   - Éxitos y errores por PDF
-   - Estadísticas de chunks generados
-
-2. **logs/failed_pdfs.json**
-   - PDFs que fallaron durante procesamiento
-   - Detalles del error
-   - Timestamp
-
-3. **logs/feedback.json**
-   - Feedback de usuarios (👍/👎)
-   - Pregunta y respuesta asociada
-   - Timestamp
-
-### Monitorear el Sistema
-
-```powershell
-# Ver últimos logs de ingestión
-Get-Content logs/ingestion.log -Tail 50
-
-# Ver PDFs que fallaron
-Get-Content logs/failed_pdfs.json
-
-# Ver feedback de usuarios
-Get-Content logs/feedback.json | ConvertFrom-Json | Format-Table
-```
-
-## 🔄 Re-procesamiento
-
-Si agregas nuevos PDFs o quieres re-procesar:
-
-```powershell
-# 1. Eliminar base de datos anterior
-Remove-Item -Recurse -Force chroma_db
-
-# 2. Limpiar logs (opcional)
-Remove-Item logs/*.log
-Remove-Item logs/failed_pdfs.json
-
-# 3. Re-ejecutar ingestión
-python ingest.py
-
-# 4. Reiniciar chatbot
-python app.py
-```
-
-## 🎨 Personalización
-
-### Modificar Prompt del Sistema
-
-Editar en `app.py` línea 40-73:
-
-```python
-SYSTEM_PROMPT = """
-Tu prompt personalizado aqui...
-"""
-```
-
-### Cambiar Paleta de Colores
-
-Editar CSS en `app.py` función `create_ui()`:
-
-```python
-custom_css = """
-.header-container {
-    background: linear-gradient(135deg, #TU_COLOR 0%, #TU_COLOR_2 100%);
-}
-"""
-```
-
-### Ajustar Chunk Size
-
-Editar en `ingest.py` función `semantic_chunking()` línea 271:
-
-```python
-text_splitter = RecursiveCharacterTextSplitter(
-    chunk_size=800,  # Modificar aquí
-    chunk_overlap=200,  # Y aquí
-)
-```
-
-## 📈 Mejoras Futuras
-
-- [ ] Dashboard de análisis de feedback
-- [ ] Búsqueda por filtros (norma, código, fecha)
-- [ ] Modo multi-idioma (inglés/español)
-- [ ] Integración con bases de datos SQL para metadatos
-- [ ] API REST para integración con otros sistemas
-- [ ] Autenticación de usuarios
-- [ ] Sistema de caché para respuestas frecuentes
-
-## 📄 Licencia
-
-Este proyecto es de uso interno para el Laboratorio de Control de Calidad.
-
-## 🤝 Soporte
-
-Para problemas o dudas:
-1. Revisar la sección **Troubleshooting**
-2. Consultar los logs en `logs/`
-3. Contactar al equipo de desarrollo
+# Lab-Ai: Asistente Virtual de Laboratorio de Control de Calidad
+
+<div align="center">
+  <img src="static/labai.png" alt="Lab-Ai Logo" width="200"/>
+  
+  **Asistente inteligente con RAG para consultas de instructivos de laboratorio**
+  
+  [![Python 3.11](https://img.shields.io/badge/Python-3.11-blue.svg)](https://www.python.org/downloads/)
+  [![Flask](https://img.shields.io/badge/Flask-3.0.0-green.svg)](https://flask.palletsprojects.com/)
+  [![Google Gemini](https://img.shields.io/badge/LLM-Gemini%202.5%20Flash-orange.svg)](https://ai.google.dev/)
+  [![PostgreSQL](https://img.shields.io/badge/Database-PostgreSQL%2016-blue.svg)](https://www.postgresql.org/)
+</div>
 
 ---
 
-**Desarrollado con ❤️ para el Laboratorio de Control de Calidad**
+## 📋 Descripción
 
-*Última actualización: Diciembre 2025*
+**Lab-Ai** es un asistente virtual basado en Retrieval-Augmented Generation (RAG) diseñado para responder consultas sobre procedimientos de laboratorio, normas ASTM, y control de calidad en construcción.
+
+### Características principales:
+- ✅ **RAG con Google Gemini 2.5 Flash**: Respuestas precisas basadas en documentación
+- ✅ **Procesamiento multi-PDF**: 44 instructivos de laboratorio vectorizados
+- ✅ **PostgreSQL + pgvector**: Almacenamiento de embeddings y búsqueda semántica
+- ✅ **Feedback del usuario**: Sistema de votos (thumbs up/down) y comentarios
+- ✅ **Historial conversacional**: Mantiene contexto entre preguntas
+- ✅ **Interfaz minimalista**: Chat intuitivo con respuestas estructuradas
+
+---
+
+## 🏗️ Arquitectura
+
+```
+┌─────────────────┐      ┌──────────────────┐      ┌─────────────────┐
+│   Usuario       │◄────►│   Flask App      │◄────►│  PostgreSQL     │
+│   (Navegador)   │      │   (puerto 8010)  │      │  + pgvector     │
+└─────────────────┘      └──────────────────┘      └─────────────────┘
+                               │
+                               ▼
+                         ┌──────────────────┐
+                         │  Google Gemini   │
+                         │  2.5 Flash API   │
+                         └──────────────────┘
+```
+
+**Componentes:**
+- **Frontend**: HTML + JavaScript + CSS (servido por Flask)
+- **Backend**: Flask + LangChain
+- **Base de datos**: PostgreSQL 16 con extensión pgvector
+- **LLM**: Google Gemini 2.5 Flash
+- **Embeddings**: Google Embedding Model 001
+
+---
+
+## 🚀 Deployment con Docker
+
+### **Requisitos previos**
+- Docker 20.10+
+- Docker Compose 2.0+
+- 2GB RAM mínimo
+- Google Gemini API Key ([obtener aquí](https://aistudio.google.com/app/apikey))
+
+### **Pasos de instalación**
+
+#### 1. Clonar el repositorio
+```bash
+git clone https://github.com/luiscastillo-lz/lab-IA.git
+cd lab-IA
+```
+
+#### 2. Crear carpeta de PDFs
+```bash
+mkdir raw
+# Copiar los 44 PDFs de instructivos a la carpeta raw/
+```
+
+#### 3. Configurar variables de entorno
+```bash
+cp .env.example .env
+nano .env  # o usar tu editor favorito
+```
+
+**Editar `.env` con tus credenciales:**
+```env
+GOOGLE_API_KEY=tu_api_key_de_gemini_aqui
+POSTGRES_PASSWORD=tu_password_seguro
+```
+
+#### 4. Construir y levantar contenedores
+```bash
+docker-compose up --build -d
+```
+
+#### 5. Verificar que los servicios estén corriendo
+```bash
+docker-compose ps
+```
+
+Deberías ver:
+```
+NAME                COMMAND                  SERVICE     STATUS      PORTS
+labia_app           "python app.py"          app         running     0.0.0.0:8010->8010/tcp
+labia_postgres      "docker-entrypoint.s…"   postgres    running     0.0.0.0:5432->5432/tcp
+```
+
+#### 6. Ingestar los PDFs (primera vez)
+```bash
+docker-compose exec app python ingest.py --reset
+```
+
+Esto procesará los 44 PDFs y creará ~438 chunks vectorizados.
+
+#### 7. Acceder a la aplicación
+```
+http://localhost:8010
+```
+
+---
+
+## 🛠️ Comandos útiles
+
+### **Ver logs de la aplicación**
+```bash
+docker-compose logs -f app
+```
+
+### **Reiniciar servicios**
+```bash
+docker-compose restart
+```
+
+### **Detener servicios**
+```bash
+docker-compose down
+```
+
+### **Borrar volúmenes (⚠️ CUIDADO: elimina datos)**
+```bash
+docker-compose down -v
+```
+
+### **Acceder a la base de datos**
+```bash
+docker-compose exec postgres psql -U postgres -d labia_db
+```
+
+### **Re-ingestar documentos**
+```bash
+docker-compose exec app python ingest.py --reset
+```
+
+---
+
+## 📊 Base de datos
+
+### **Tablas principales**
+- `langchain_pg_embedding`: Vectores de documentos
+- `langchain_pg_collection`: Colecciones de embeddings
+- `chat_logs`: Registro de conversaciones
+- `negative_feedbacks`: Comentarios de usuarios
+- `chat_session_state`: Historial conversacional
+
+### **Consultas útiles**
+Ver archivo [consultas_db.sql](consultas_db.sql) o [README_DB.md](README_DB.md) para queries completas.
+
+**Ejemplos:**
+```sql
+-- Ver total de documentos vectorizados
+SELECT COUNT(*) FROM langchain_pg_embedding;
+
+-- Ver últimas consultas
+SELECT user_query, bot_response, timestamp 
+FROM chat_logs 
+ORDER BY timestamp DESC 
+LIMIT 10;
+
+-- Ver satisfacción del usuario
+SELECT 
+    COUNT(CASE WHEN vote = 'up' THEN 1 END) AS positivos,
+    COUNT(CASE WHEN vote = 'down' THEN 1 END) AS negativos
+FROM chat_logs;
+```
+
+---
+
+## 🔧 Configuración avanzada
+
+### **Variables de entorno disponibles**
+
+| Variable | Descripción | Valor por defecto |
+|----------|-------------|-------------------|
+| `GOOGLE_API_KEY` | API Key de Google Gemini | *Requerido* |
+| `LLM_MODEL` | Modelo de LLM | `gemini-2.5-flash` |
+| `LLM_TEMPERATURE` | Creatividad del modelo (0-1) | `0.8` |
+| `LLM_MAX_TOKENS` | Tokens máximos de respuesta | `4096` |
+| `CHUNK_SIZE` | Tamaño de chunks para RAG | `1024` |
+| `CHUNK_OVERLAP` | Solapamiento entre chunks | `150` |
+| `RETRIEVAL_K` | Documentos a recuperar | `5` |
+| `POSTGRES_PASSWORD` | Contraseña de PostgreSQL | `admin171419860` |
+| `DEBUG` | Modo debug de Flask | `False` |
+
+---
+
+## 📁 Estructura del proyecto
+
+```
+lab-IA/
+├── app.py                  # Aplicación Flask principal
+├── database.py             # Conexión y esquemas de PostgreSQL
+├── ingest.py               # Pipeline de ingesta de PDFs
+├── requirements.txt        # Dependencias Python
+├── Dockerfile              # Imagen Docker de la app
+├── docker-compose.yml      # Orquestación de servicios
+├── .env.example            # Template de variables de entorno
+├── .gitignore              # Archivos excluidos de Git
+├── README.md               # Este archivo
+├── README_DB.md            # Documentación de base de datos
+├── consultas_db.sql        # Queries SQL útiles
+├── static/                 # Frontend (HTML, CSS, JS)
+│   ├── index.html
+│   ├── script.js
+│   ├── style.css
+│   └── labai.png
+└── raw/                    # PDFs de instructivos (44 archivos)
+```
+
+---
+
+## 🧪 Testing
+
+### **Probar endpoints**
+
+**Health check:**
+```bash
+curl http://localhost:8010/
+```
+
+**Enviar pregunta:**
+```bash
+curl -X POST http://localhost:8010/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "¿Cómo se mide la gravedad específica?",
+    "session_id": "test-001"
+  }'
+```
+
+**Votar respuesta:**
+```bash
+curl -X POST http://localhost:8010/vote \
+  -H "Content-Type: application/json" \
+  -d '{
+    "log_id": 1,
+    "vote": "up"
+  }'
+```
+
+---
+
+## 🐛 Troubleshooting
+
+### **La app no inicia**
+```bash
+# Ver logs detallados
+docker-compose logs -f app
+
+# Verificar que PostgreSQL esté saludable
+docker-compose ps postgres
+```
+
+### **Error de conexión a PostgreSQL**
+```bash
+# Verificar que la contraseña en .env coincida
+# Reiniciar servicios
+docker-compose down
+docker-compose up -d
+```
+
+### **Respuestas del LLM muy cortas**
+- Verificar que `LLM_MAX_TOKENS` en `.env` sea >= 4096
+
+### **No encuentra documentos**
+```bash
+# Re-ingestar PDFs
+docker-compose exec app python ingest.py --reset
+```
+
+---
+
+## 📝 Licencia
+
+Proyecto privado - Lazarus & Lazarus  
+© 2025 Luis Castillo
+
+---
+
+## 👥 Contacto
+
+**Desarrollador**: Luis Castillo  
+**Organización**: Lazarus & Lazarus  
+**Repositorio**: [https://github.com/luiscastillo-lz/lab-IA](https://github.com/luiscastillo-lz/lab-IA)
+
+---
+
+## 🚀 Roadmap
+
+- [ ] Autenticación de usuarios
+- [ ] Exportar conversaciones a PDF
+- [ ] Dashboard de métricas
+- [ ] Soporte multiidioma
+- [ ] Integración con Slack/Teams
+- [ ] API REST documentada con Swagger
+
+---
+
+<div align="center">
+  <strong>Hecho con ❤️ para mejorar la eficiencia en el laboratorio</strong>
+</div>

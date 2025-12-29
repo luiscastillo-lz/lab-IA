@@ -1,41 +1,50 @@
-# Core Langchain and LLM
-langchain==0.1.20
-langchain-google-genai==0.0.11
-google-generativeai==0.4.1
-langchain-community==0.0.38
-langchain-text-splitters==0.0.1
-langchain-core==0.1.52
+# ============================================================================
+# RAG LABIA - REQUIREMENTS
+# Asistente Virtual para Laboratorio de Control de Calidad
+# Python 3.11.9
+# ============================================================================
 
-# Vector Store
-chromadb==0.4.24
+# --- Framework Web ---
+flask==3.0.0
+flask-cors==4.0.0
+python-dotenv==1.0.0
 
-# PDF Processing - Multiple Parsers
-pdfplumber==0.11.0
-PyMuPDF==1.24.0
-tabula-py==2.9.3
-pytesseract==0.3.10
+# --- LangChain + Google Gemini ---
+langchain==0.3.13
+langchain-google-genai==2.0.6
+langchain-community==0.3.13
+google-generativeai==0.8.3
 
-# Image Processing (for OCR)
-Pillow==10.3.0
-opencv-python==4.9.0.80
+# --- Vector Store (PostgreSQL + pgvector) ---
+langchain-postgres==0.0.12
+psycopg2-binary==2.9.10
+pgvector==0.2.5
 
-# Data Processing
-pandas==2.2.1
-numpy==1.26.4
+# --- Procesamiento PDFs - Multi-Librería ---
+pdfplumber==0.11.4          # Tablas estructuradas (PRIORIDAD 1)
+pypdf==5.1.0                # Parser básico
+PyMuPDF==1.24.14            # fitz - Texto e imágenes nativas (PRIORIDAD 2)
+tabula-py==2.9.3            # Tablas complejas (requiere Java 11+)
 
-# Unit Conversion
-pint==0.23
+# --- OCR (Fallback para imágenes/diagramas) ---
+pytesseract==0.3.13         # OCR wrapper (requiere tesseract-ocr instalado)
+Pillow==11.0.0              # Procesamiento de imágenes
+pdf2image==1.17.0           # Convertir PDF a imagen para OCR
 
-# Web UI
-gradio==4.26.0
+# --- Procesamiento Avanzado ---
+unstructured==0.16.11       # Segmentación semántica por secciones
+pandas==2.2.3               # Manejo de datos tabulares
+openpyxl==3.1.5             # Leer archivos Excel (si aplica)
 
-# PDF Generation (for export)
-reportlab==4.1.0
+# --- Normalización de Unidades ---
+pint==0.24.4                # Conversión de unidades (psi→kPa, °C→K, etc.)
+regex==2024.11.6            # Regex avanzado para extracción
 
-# Additional utilities
-python-dotenv==1.0.1
-tiktoken==0.6.0
-unstructured==0.12.5
+# --- Utilidades ---
+tiktoken==0.8.0             # Conteo de tokens para Google Gemini
+httpx==0.28.1               # HTTP client (SSL bypass corporativo)
+certifi==2024.12.14         # SSL certificates
 
-# Additional PDF table extraction (replaces camelot)
-pdfminer.six==20231228
+# --- Testing & Development (opcional) ---
+pytest==8.3.4
+black==24.10.0

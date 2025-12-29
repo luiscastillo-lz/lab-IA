@@ -1,381 +1,495 @@
 """
-Chatbot RAG - API Flask para Asistente Virtual de Laboratorio
-Backend API con Google Gemini 2.0 Flash + ChromaDB
+================================================================================================
+APP.PY - RAG LABIA
+Aplicación Flask para Asistente Virtual de Laboratorio de Control de Calidad
+================================================================================================
+
+Características:
+- Google Gemini 2.5 Flash como LLM
+- Configuración explícita de temperatura, max_tokens, modelo
+- Prompt Chain of Thought especializado para laboratorio
+- Historial conversacional (últimas 5 interacciones)
+- Retrieval con similarity_search (k=5-10)
+- Logging completo con tokens y costos
+- Endpoints: /chat, /vote, /feedback, /metrics, /vectorize
+
+Base de datos: labia_db
+Colección: labia_embeddings
+Puerto: 8000
+
+Autor: Sistema LabIa
+Fecha: 27 de diciembre de 2025
+================================================================================================
 """
 
 import os
-import json
+import time
+import uuid
 from datetime import datetime
-from pathlib import Path
-from typing import List, Tuple, Dict
-from collections import deque
-
-from flask import Flask, request, jsonify, send_from_directory
-from flask_cors import CORS
 from dotenv import load_dotenv
+from flask import Flask, render_template, request, jsonify
+from flask_cors import CORS
 
-# Langchain
+# LangChain con Google Gemini
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
-from langchain_community.vectorstores import Chroma
+from langchain_postgres import PGVector
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.messages import HumanMessage, AIMessage
 
-# PDF Export
-from reportlab.lib.pagesizes import letter
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.units import inch
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+# Database y otros módulos
+import database
+import ingest
 
-# ==================== CONFIGURACIÓN ====================
+# ================================================================================================
+# CONFIGURACIÓN
+# ================================================================================================
+
 load_dotenv()
+app = Flask(__name__)
+CORS(app)  # Habilitar CORS para todas las rutas
 
-# Verificar API key
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-if not GOOGLE_API_KEY or GOOGLE_API_KEY == "your_google_api_key_here":
-    raise ValueError("ERROR: GOOGLE_API_KEY no configurada. Copia .env.example a .env y configura tu API key.")
+# Inicializar Base de Datos
+database.init_db()
 
-CHROMA_DIR = os.getenv("CHROMA_PERSIST_DIR", "./chroma_db")
-FEEDBACK_FILE = "logs/feedback.json"
+# ================================================================================================
+# CONFIGURACIÓN EXPLÍCITA DEL LLM
+# ================================================================================================
 
-# Crear directorios necesarios
-Path("logs").mkdir(exist_ok=True)
-Path("exports").mkdir(exist_ok=True)
-Path("static").mkdir(exist_ok=True)
+LLM_CONFIG = {
+    "model": os.getenv("LLM_MODEL", "gemini-2.5-flash-latest"),  # Modelo configurable
+    "temperature": float(os.getenv("LLM_TEMPERATURE", "0.6")),   # 0-1 (Configurableexplícitamente)
+    "max_output_tokens": int(os.getenv("LLM_MAX_TOKENS", "1000")),  # Configurable
+    "top_p": 0.95,
+    "top_k": 40
+}
 
-# ==================== PROMPT DEL SISTEMA ====================
+print("\n" + "=" * 80)
+print("🤖 CONFIGURACIÓN LLM - GOOGLE GEMINI")
+print("=" * 80)
+print(f"Modelo: {LLM_CONFIG['model']}")
+print(f"Temperatura: {LLM_CONFIG['temperature']}")
+print(f"Max Tokens: {LLM_CONFIG['max_output_tokens']}")
+print("=" * 80 + "\n")
 
-SYSTEM_PROMPT = """Eres un asistente virtual del laboratorio.
+# ================================================================================================
+# CONSTANTES
+# ================================================================================================
 
+COLLECTION_NAME = "labia_embeddings"
+RETRIEVAL_K = int(os.getenv("RETRIEVAL_K", "5"))  # Número de documentos a recuperar
+
+# PostgreSQL Connection String
+PG_CONNECTION_STRING = f"postgresql://{os.getenv('POSTGRES_USER', 'postgres')}:{os.getenv('POSTGRES_PASSWORD', '')}@{os.getenv('POSTGRES_HOST', 'localhost')}:{os.getenv('POSTGRES_PORT', '5432')}/{os.getenv('POSTGRES_DB', 'labia_db')}"
+
+# ================================================================================================
+# INICIALIZACIÓN DE EMBEDDINGS Y VECTORSTORE
+# ================================================================================================
+
+print("🔗 Conectando a Google Gemini Embeddings...")
+embeddings = GoogleGenerativeAIEmbeddings(
+    model="models/embedding-001",
+    google_api_key=os.getenv("GOOGLE_API_KEY")
+)
+
+print(f"🗄️  Conectando a PostgreSQL+pgvector (colección: {COLLECTION_NAME})...")
+vectorstore = PGVector(
+    connection=PG_CONNECTION_STRING,
+    collection_name=COLLECTION_NAME,
+    embeddings=embeddings
+)
+
+# ================================================================================================
+# INICIALIZACIÓN DEL LLM (GOOGLE GEMINI)
+# ================================================================================================
+
+print("🚀 Inicializando Google Gemini 2.5 Flash...")
+llm = ChatGoogleGenerativeAI(
+    model=LLM_CONFIG["model"],
+    temperature=LLM_CONFIG["temperature"],
+    max_output_tokens=LLM_CONFIG["max_output_tokens"],
+    google_api_key=os.getenv("GOOGLE_API_KEY")
+)
+
+# ================================================================================================
+# SYSTEM PROMPT ESPECIALIZADO PARA LABORATORIO
+# ================================================================================================
+
+SYSTEM_PROMPT = """Eres un asistente virtual experto en procedimientos del laboratorio.
+Tu tarea es ayudar a técnicos y laboratoristas con preguntas sobre los instructivos y documentacion internos proporcionados.
 INSTRUCCIONES CRÍTICAS:
 
-1. RAZONA internamente paso a paso (no lo muestres):
-   - Identifica exactamente la pregunta.
-   - Usa solo información del contexto.
-   - Redacta la mejor respuesta.
+1. ANALIZA paso a paso (Chain of Thought):
+   - ¿Cuál es exactamente la pregunta?
+   - ¿Qué información relevante hay en el contexto?
+   - ¿Cuál es la mejor respuesta?
+   -- Si la pregunta es general o ambigua, busca el procedimiento o sección más relevante, aunque no coincida exactamente con las palabras usadas.
+- Si la pregunta no usa los mismos términos que el instructivo, busca sinónimos o frases relacionadas.
+
 
 2. RESTRINGE tu respuesta:
    - SOLO usa información del contexto proporcionado
-   - Si no tienes la información, responde: "No tengo información sobre eso en los documentos del laboratorio."
+   - Si no tienes la información, responde: "No tengo información sobre esto en los instructivos disponibles."
    - NUNCA inventes especificaciones técnicas, normas o procedimientos
 
-3. ESTRUCTURA tu respuesta en máximo 3 párrafos:
+3. ESTRUCTURA tu respuesta:
    - Párrafo 1: Respuesta directa a la pregunta
-   - Párrafo 2: Detalles técnicos relevantes (especificaciones, normas, pasos)
-   - Párrafo 3: Recomendación práctica o consideración importante
+   - Párrafo 2: Detalles técnicos (procedimiento, normas ASTM, equipos)
+   - Párrafo 3: Recomendación o precaución (si aplica)
 
 4. ESTILO:
    - Profesional pero amigable
    - Máximo 3 párrafos
+   - Incluye referencias técnicas (normas ASTM, códigos de instructivo)
    - Español formal
 
-CONTEXTO:
+5. EJEMPLOS:
+
+   Pregunta: "¿Cómo medir el pH del cemento?"
+   
+   Respuesta: "El pH del cemento se mide según el instructivo LL-CI-I-02, que sigue la norma ASTM C1293. 
+   Se prepara una solución acuosa al 10% de cemento en agua destilada, se agita durante 5 minutos y se 
+   deja reposar 10 minutos antes de medir con un pH-metro calibrado.
+   
+   El procedimiento requiere un pH-metro con precisión de ±0.1, agua destilada y una balanza analítica. 
+   La temperatura de medición debe estar entre 20-25°C para asegurar resultados precisos.
+   
+   Es importante calibrar el pH-metro antes de cada serie de mediciones y verificar que la muestra 
+   esté homogénea para obtener lecturas representativas."
+
+CONTEXTO DE INSTRUCTIVOS DISPONIBLES:
 {context}
 
 HISTORIAL DE CONVERSACIÓN:
 {chat_history}
 
-PREGUNTA DEL USUARIO:
+PREGUNTA DEL TÉCNICO:
 {question}
+"""
 
-RESPUESTA:"""
+# ================================================================================================
+# FUNCIONES AUXILIARES
+# ================================================================================================
 
-# ==================== CLASE LabAssistant ====================
-
-class LabAssistant:
-    """Asistente de laboratorio con parámetros fijos"""
+def calculate_tokens_gemini(text: str) -> int:
+    """
+    Estima tokens para Google Gemini.
+    Aproximación: ~1 token ≈ 4 caracteres para texto en español.
     
-    # Parámetros fijos del modelo (hardcodeados)
-    TEMPERATURE = 0.5
-    MAX_TOKENS = 800    
-    MODEL = "gemini-2.5-flash"
+    Para cálculo exacto, usar la API de Gemini (futura mejora).
+    """
+    return len(text) // 4
+
+
+def format_chat_history(history_tuples: list) -> str:
+    """
+    Formatea el historial de chat para incluir en el prompt.
     
-    def __init__(self):
-        """Inicializa el asistente con parámetros fijos"""
-        # Cargar vectorstore
-        self.embeddings = GoogleGenerativeAIEmbeddings(
-            model="models/embedding-001",
-            google_api_key=GOOGLE_API_KEY
-        )
-        
-        self.vectorstore = Chroma(
-            persist_directory=CHROMA_DIR,
-            embedding_function=self.embeddings,
-            collection_name="laboratorio_qa"
-        )
-        
-        # Configurar LLM
-        self.llm = ChatGoogleGenerativeAI(
-            model=self.MODEL,
-            temperature=self.TEMPERATURE,
-            max_output_tokens=self.MAX_TOKENS,
-            google_api_key=GOOGLE_API_KEY
-        )
-
-        # Memoria conversacional (últimas 5 interacciones)
-        self._history: deque[Tuple[str, str]] = deque(maxlen=5)
+    Args:
+        history_tuples: Lista de tuplas [(user_query, bot_response), ...]
     
-    def chat(self, question: str) -> Tuple[str, List[Dict]]:
-        """Procesa pregunta y retorna respuesta + fuentes"""
-        try:
-            source_docs = self.vectorstore.similarity_search(question, k=5)
-
-            context_blocks: List[str] = []
-            for doc in source_docs:
-                meta = doc.metadata or {}
-                filename = meta.get("filename", "Desconocido")
-                section = meta.get("section_type", "general")
-                context_blocks.append(f"[Fuente: {filename} | Sección: {section}]\n{doc.page_content}")
-            context = "\n\n".join(context_blocks)
-
-            chat_history_text = "\n".join([f"Usuario: {q}\nAsistente: {a}" for q, a in self._history])
-            prompt = SYSTEM_PROMPT.format(context=context, chat_history=chat_history_text, question=question)
-
-            llm_result = self.llm.invoke(prompt)
-            answer = getattr(llm_result, "content", None) or str(llm_result)
-            
-            # Formatear fuentes
-            sources = []
-            seen_sources = set()
-            
-            for doc in source_docs:
-                metadata = doc.metadata
-                source_id = f"{metadata.get('filename', 'Desconocido')}_{metadata.get('page', 0)}"
-                
-                if source_id not in seen_sources:
-                    sources.append({
-                        'filename': metadata.get('filename', 'Desconocido'),
-                        'codigo': metadata.get('codigo', 'N/A'),
-                        'normas': metadata.get('normas', 'N/A') or 'N/A',
-                        'section': metadata.get('section_type', 'general')
-                    })
-                    seen_sources.add(source_id)
-
-            # Actualizar memoria
-            self._history.append((question, answer))
-
-            return answer, sources
-            
-        except Exception as e:
-            return f"Error al procesar la pregunta: {str(e)}", []
+    Returns:
+        String formateado con el historial
+    """
+    if not history_tuples:
+        return "No hay historial previo."
     
-    def reset_memory(self):
-        """Reinicia la memoria conversacional"""
-        self._history.clear()
+    formatted = []
+    for idx, (user_q, bot_r) in enumerate(history_tuples, 1):
+        formatted.append(f"Interacción {idx}:")
+        formatted.append(f"  Usuario: {user_q}")
+        formatted.append(f"  Asistente: {bot_r}")
+    
+    return "\n".join(formatted)
 
-
-# ==================== FLASK APP ====================
-
-app = Flask(__name__, static_folder='static', static_url_path='')
-CORS(app)
-
-# Estado global
-assistant = None
-chat_history = []
-
-def get_assistant():
-    """Obtiene o inicializa el asistente"""
-    global assistant
-    if assistant is None:
-        assistant = LabAssistant()
-    return assistant
-
-
-# ==================== ENDPOINTS ====================
+# ================================================================================================
+# RUTAS (ENDPOINTS)
+# ================================================================================================
 
 @app.route('/')
 def index():
-    """Sirve la página principal"""
-    return send_from_directory('static', 'index.html')
+    """Sirve la interfaz principal del chat."""
+    return render_template('index.html')
 
 
-@app.route('/api/chat', methods=['POST'])
-def api_chat():
-    """Endpoint para chat"""
-    global chat_history
+@app.route('/chat', methods=['POST'])
+def chat():
+    """
+    Endpoint principal para interacciones de chat.
     
-    try:
-        data = request.json
-        message = data.get('message', '').strip()
-        
-        if not message:
-            return jsonify({'error': 'Mensaje vacío'}), 400
-        
-        # Procesar pregunta
-        assistant = get_assistant()
-        answer, sources = assistant.chat(message)
-        
-        # Guardar en historial
-        chat_entry = {
-            'timestamp': datetime.now().isoformat(),
-            'question': message,
-            'answer': answer,
-            'sources': sources
+    Request Body:
+        {
+            "message": "Pregunta del usuario",
+            "session_id": "UUID de la sesión (opcional)"
         }
-        chat_history.append(chat_entry)
-        
-        return jsonify({
-            'answer': answer,
-            'sources': sources,
-            'timestamp': chat_entry['timestamp']
-        })
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-
-@app.route('/api/feedback', methods=['POST'])
-def api_feedback():
-    """Endpoint para guardar feedback"""
-    try:
-        data = request.json
-        message = data.get('message', '')
-        feedback_type = data.get('type', 'neutral')
-        
-        feedback_data = {
-            'timestamp': datetime.now().isoformat(),
-            'message': message,
-            'feedback': feedback_type
+    
+    Response:
+        {
+            "response": "Respuesta del asistente",
+            "sources": ["documento1.pdf", "documento2.pdf"],
+            "log_id": 123,
+            "latency": 1.23,
+            "session_id": "uuid"
         }
-        
-        with open(FEEDBACK_FILE, 'a', encoding='utf-8') as f:
-            f.write(json.dumps(feedback_data, ensure_ascii=False) + '\n')
-        
-        return jsonify({'status': 'success', 'message': f'Feedback guardado: {feedback_type}'})
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    """
+    data = request.json
+    user_query = data.get('message', '')
+    session_id = data.get('session_id')
 
+    if not user_query:
+        return jsonify({'error': 'Message is required'}), 400
 
-@app.route('/api/export', methods=['GET'])
-def api_export():
-    """Endpoint para exportar chat a PDF"""
-    global chat_history
-    
+    # Generar session_id si no existe
+    if not session_id:
+        session_id = str(uuid.uuid4())
+
+    start_time = time.time()
+
+    # 1. Actualizar estado de sesión
+    database.upsert_session_state(session_id)
+
+    # 2. Recuperar historial de conversación (últimas 5 interacciones)
+    history_tuples = database.get_recent_history(session_id, limit=5)
+    formatted_history = format_chat_history(history_tuples)
+
+    # 3. Retrieval (RAG) - Búsqueda semántica
     try:
-        if not chat_history:
-            return jsonify({'error': 'No hay conversación para exportar'}), 400
-        
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"chat_export_{timestamp}.pdf"
-        filepath = f"exports/{filename}"
-        
-        # Crear PDF
-        doc = SimpleDocTemplate(filepath, pagesize=letter)
-        styles = getSampleStyleSheet()
-        story = []
-        
-        # Título
-        title_style = ParagraphStyle(
-            'CustomTitle',
-            parent=styles['Heading1'],
-            fontSize=16,
-            spaceAfter=30
-        )
-        story.append(Paragraph("Conversación - Asistente Virtual de Laboratorio", title_style))
-        story.append(Spacer(1, 0.2*inch))
-        
-        # Estilos para pregunta y respuesta
-        question_style = ParagraphStyle(
-            'Question',
-            parent=styles['Normal'],
-            fontSize=11,
-            leftIndent=20,
-            spaceAfter=10
-        )
-        
-        answer_style = ParagraphStyle(
-            'Answer',
-            parent=styles['Normal'],
-            fontSize=10,
-            leftIndent=20,
-            spaceAfter=20
-        )
-        
-        # Agregar conversaciones
-        for idx, entry in enumerate(chat_history, 1):
-            time_str = datetime.fromisoformat(entry['timestamp']).strftime("%d/%m/%Y %H:%M:%S")
-            story.append(Paragraph(f"<b>Interacción {idx}</b> - {time_str}", styles['Heading2']))
-            story.append(Spacer(1, 0.1*inch))
-            
-            story.append(Paragraph(f"<b>Pregunta:</b> {entry['question']}", question_style))
-            story.append(Paragraph(f"<b>Respuesta:</b> {entry['answer']}", answer_style))
-            
-            if entry['sources']:
-                sources_text = "<b>Fuentes:</b><br/>"
-                for src in entry['sources']:
-                    sources_text += f"• {src['codigo']} - {src['filename']}<br/>"
-                story.append(Paragraph(sources_text, answer_style))
-            
-            story.append(Spacer(1, 0.3*inch))
-        
-        doc.build(story)
-        
-        return jsonify({
-            'status': 'success',
-            'filename': filename,
-            'download_url': f'/exports/{filename}'
+        docs = vectorstore.similarity_search(user_query, k=RETRIEVAL_K)
+    except Exception as e:
+        print(f"❌ Error en vectorstore: {e}")
+        docs = []
+
+    # Construir contexto
+    context_text = "\n\n".join([
+        f"[{d.metadata.get('codigo_documento', 'DOC')}] {d.page_content}" 
+        for d in docs
+    ])
+    
+    # Extraer fuentes únicas
+    sources = list(set([
+        d.metadata.get('source', 'Desconocido') 
+        for d in docs
+    ]))
+
+    # 4. Generar respuesta con LLM
+    prompt_template = ChatPromptTemplate.from_messages([
+        ("system", SYSTEM_PROMPT),
+        ("human", "{question}")
+    ])
+
+    chain = prompt_template | llm
+
+    try:
+        response_message = chain.invoke({
+            "context": context_text,
+            "chat_history": formatted_history,
+            "question": user_query
         })
-        
+        bot_response = response_message.content
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        print(f"❌ Error en LLM: {e}")
+        bot_response = "Lo siento, ha ocurrido un error al procesar tu solicitud. Por favor, intenta de nuevo."
 
+    latency = time.time() - start_time
 
-@app.route('/exports/<filename>')
-def download_export(filename):
-    """Descarga de archivos exportados"""
-    return send_from_directory('exports', filename, as_attachment=True)
-
-
-@app.route('/api/reset', methods=['POST'])
-def api_reset():
-    """Endpoint para reiniciar conversación"""
-    global chat_history, assistant
+    # 5. Calcular tokens (estimación)
+    # Construir el prompt completo aproximado
+    full_prompt_text = f"""Eres un asistente virtual del laboratorio de control de calidad.
     
+CONTEXTO: {context_text}
+HISTORIAL: {formatted_history}
+PREGUNTA: {user_query}"""
+    
+    tokens_in = calculate_tokens_gemini(full_prompt_text)
+    tokens_out = calculate_tokens_gemini(bot_response)
+
+    # 6. Logging en base de datos
+    context_docs_json = [
+        {
+            "source": d.metadata.get('source'),
+            "codigo": d.metadata.get('codigo_documento'),
+            "seccion": d.metadata.get('seccion')
+        }
+        for d in docs[:3]  # Solo primeros 3 para JSON
+    ]
+
+    log_id = database.log_interaction(
+        tokens_in=tokens_in,
+        tokens_out=tokens_out,
+        latency=latency,
+        user_query=user_query,
+        bot_response=bot_response,
+        session_id=session_id,
+        context_docs=context_docs_json
+    )
+
+    return jsonify({
+        "response": bot_response,
+        "sources": sources,
+        "log_id": log_id,
+        "latency": round(latency, 2),
+        "session_id": session_id,
+        "tokens_in": tokens_in,
+        "tokens_out": tokens_out,
+        "cost_usd": round((tokens_in * 0.00001875 / 1000) + (tokens_out * 0.000075 / 1000), 6)
+    })
+
+
+@app.route('/vote', methods=['POST'])
+def vote():
+    """
+    Registra un voto (thumbs up/down) en una respuesta.
+    
+    Request Body:
+        {
+            "log_id": 123,
+            "vote": "up" | "down"
+        }
+    """
+    data = request.json
+    log_id = data.get('log_id')
+    vote_type = data.get('vote')
+    
+    if log_id and vote_type in ['up', 'down']:
+        database.update_vote(log_id, vote_type)
+        return jsonify({"status": "success"})
+    
+    return jsonify({"error": "Invalid request"}), 400
+
+
+@app.route('/feedback', methods=['POST'])
+def feedback():
+    """
+    Guarda feedback negativo detallado.
+    
+    Request Body:
+        {
+            "log_id": 123,
+            "comment": "Comentario del usuario",
+            "source": "Página web",
+            "response": "Respuesta que generó el feedback"
+        }
+    """
+    data = request.json
+    database.save_negative_feedback(
+        chat_log_id=data.get('log_id'),
+        comment=data.get('comment'),
+        source=data.get('source', 'Web'),
+        response=data.get('response', '')
+    )
+    return jsonify({"status": "success"})
+
+
+@app.route('/metrics', methods=['GET'])
+def get_metrics():
+    """
+    Retorna métricas del sistema.
+    
+    Response:
+        {
+            "total_chats": 100,
+            "avg_latency": 1.23,
+            "tokens_in": 50000,
+            "tokens_out": 30000,
+            "cost": "$0.0042",
+            "pos_votes": 80,
+            "neg_votes": 5,
+            "satisfaction": 94.1,
+            "doc_count": 245
+        }
+    """
+    stats = database.get_metrics()
+    
+    # Obtener conteo de documentos en vectorstore
     try:
-        if assistant:
-            assistant.reset_memory()
-        
-        chat_history = []
-        
-        return jsonify({'status': 'success', 'message': 'Conversación reiniciada'})
-        
+        conn = database.get_pg_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT COUNT(*) FROM langchain_pg_embedding WHERE collection_id = (SELECT uuid FROM langchain_pg_collection WHERE name = %s)",
+            (COLLECTION_NAME,)
+        )
+        doc_count = cursor.fetchone()[0] or 0
+        cursor.close()
+        conn.close()
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        print(f"Error obteniendo conteo de documentos: {e}")
+        doc_count = 0
+
+    return jsonify({
+        "total_chats": stats["total_chats"],
+        "avg_latency": stats["avg_latency"],
+        "tokens_in": stats["tokens_in"],
+        "tokens_out": stats["tokens_out"],
+        "cost": f"${stats['cost_usd']}",
+        "pos_votes": stats["pos_votes"],
+        "neg_votes": stats["neg_votes"],
+        "satisfaction": stats["satisfaction"],
+        "doc_count": doc_count
+    })
 
 
-# ==================== MAIN ====================
-
-def main():
-    """Función principal para lanzar la aplicación"""
+@app.route('/vectorize', methods=['POST'])
+def trigger_vectorization():
+    """
+    Dispara manualmente el proceso de ingesta de documentos.
     
-    # Verificar que existe el vectorstore
-    if not Path(CHROMA_DIR).exists():
-        print("=" * 80)
-        print("ERROR: No se encontró la base de datos vectorial ChromaDB")
-        print(f"Ubicación esperada: {CHROMA_DIR}")
-        print("\nPrimero ejecuta: python ingest.py")
-        print("=" * 80)
-        return
+    Útil para re-procesar PDFs después de agregar nuevos archivos a /raw.
     
-    print("=" * 80)
-    print("🚀 INICIANDO ASISTENTE VIRTUAL DE LABORATORIO - FLASK API")
-    print("=" * 80)
-    print(f"ChromaDB: {CHROMA_DIR}")
-    print(f"Google API Key: {'✓ Configurada' if GOOGLE_API_KEY else '✗ NO configurada'}")
-    print(f"Modelo: {LabAssistant.MODEL}")
-    print(f"Temperatura: {LabAssistant.TEMPERATURE}")
-    print(f"Max Tokens: {LabAssistant.MAX_TOKENS}")
-    print("=" * 80)
-    print("\n🌐 Servidor Flask iniciado en: http://127.0.0.1:5000")
-    print("\nEndpoints disponibles:")
-    print("  GET  /                - Interfaz web")
-    print("  POST /api/chat        - Enviar mensaje")
-    print("  POST /api/feedback    - Guardar feedback")
-    print("  GET  /api/export      - Exportar a PDF")
-    print("  POST /api/reset       - Reiniciar conversación")
-    print("  GET  /exports/<file>  - Descargar PDF")
-    print("=" * 80)
-    
-    app.run(host='127.0.0.1', port=5000, debug=True)
+    Response:
+        {
+            "message": "Documentos re-ingestados correctamente."
+        }
+    """
+    try:
+        print("\n🔄 Disparando proceso de ingesta manual...")
+        ingest.ingest_pdfs()
+        
+        # Refrescar vectorstore
+        global vectorstore
+        vectorstore = PGVector(
+            connection=PG_CONNECTION_STRING,
+            collection_name=COLLECTION_NAME,
+            embeddings=embeddings
+        )
+        
+        return jsonify({"message": "Documentos re-ingestados correctamente."})
+    except Exception as e:
+        print(f"❌ Error en vectorización: {e}")
+        return jsonify({"error": f"Falló la vectorización: {str(e)}"}), 500
 
 
-if __name__ == "__main__":
-    main()
+@app.route('/clear_session', methods=['POST'])
+def clear_session():
+    """
+    Limpia el historial de una sesión (Nueva Conversación).
+    
+    Request Body:
+        {
+            "session_id": "uuid"
+        }
+    """
+    data = request.json
+    session_id = data.get('session_id')
+    
+    if session_id:
+        database.clear_session(session_id)
+        return jsonify({"status": "success", "message": "Sesión limpiada"})
+    
+    return jsonify({"error": "session_id required"}), 400
+
+# ================================================================================================
+# MAIN
+# ================================================================================================
+
+if __name__ == '__main__':
+    port = int(os.environ.get("PORT", 8010))
+    
+    print("\n" + "=" * 80)
+    print("🧪 LABIA - ASISTENTE VIRTUAL DE LABORATORIO")
+    print("=" * 80)
+    print(f"🌐 Servidor corriendo en: http://localhost:{port}")
+    print(f"🗄️  Base de datos: {os.getenv('POSTGRES_DB', 'labia_db')}")
+    print(f"📚 Colección: {COLLECTION_NAME}")
+    print(f"🤖 Modelo: {LLM_CONFIG['model']}")
+    print("=" * 80 + "\n")
+    
+    app.run(host='0.0.0.0', port=port, debug=False)
