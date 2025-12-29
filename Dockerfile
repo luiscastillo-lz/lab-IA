@@ -22,9 +22,9 @@ WORKDIR /app
 # Copiar requirements primero (mejor uso de cache de Docker)
 COPY requirements.txt .
 
-# Instalar dependencias Python
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+# Instalar dependencias Python con bypass SSL para redes corporativas
+RUN pip install --no-cache-dir --upgrade pip --trusted-host pypi.org --trusted-host files.pythonhosted.org && \
+    pip install --no-cache-dir -r requirements.txt --trusted-host pypi.org --trusted-host files.pythonhosted.org
 
 # Copiar código de la aplicación
 COPY app.py .
